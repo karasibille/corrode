@@ -1,0 +1,582 @@
+//! RawTherapee processing profiles (`.pp3` sidecar files).
+//!
+//! A `.pp3` is an INI-like key file written next to the image
+//! (`DSCF1234.RAF.pp3`). corrode only reads and writes the marks of the
+//! `[General]` section (`Rank`, `ColorLabel`, `InTrash`); every other line
+//! is kept byte for byte, so RawTherapee's settings are never altered.
+
+use std::fmt;
+use std::fs::{self, Permissions};
+use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+const GENERAL: &str = "General";
+const RANK: &str = "Rank";
+const COLOR_LABEL: &str = "ColorLabel";
+const IN_TRASH: &str = "InTrash";
+
+/// Highest star rating RawTherapee knows.
+pub const MAX_RANK: u8 = 5;
+
+/// Color label, numbered as in RawTherapee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorLabel {
+    #[default]
+    None = 0,
+    Red = 1,
+    Yellow = 2,
+    Green = 3,
+    Blue = 4,
+    Purple = 5,
+}
+
+impl ColorLabel {
+    fn from_number(n: u8) -> Option<ColorLabel> {
+        match n {
+            0 => Some(ColorLabel::None),
+            1 => Some(ColorLabel::Red),
+            2 => Some(ColorLabel::Yellow),
+            3 => Some(ColorLabel::Green),
+            4 => Some(ColorLabel::Blue),
+            5 => Some(ColorLabel::Purple),
+            _ => None,
+        }
+    }
+}
+
+/// The marks corrode reads and writes. A missing key means its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Marks {
+    /// Star rating, from 0 (unrated) to [`MAX_RANK`].
+    pub rank: u8,
+    pub color: ColorLabel,
+    /// Rejected photo, shown in RawTherapee's trash.
+    pub in_trash: bool,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    /// The file is not text. Usually a corrupted file: it must not be
+    /// overwritten, since it may still be recoverable.
+    NotText,
+    /// A line is neither a section header, a `key=value` pair, a comment
+    /// nor blank (1-based line number).
+    Malformed {
+        line: usize,
+    },
+    /// A mark has a value RawTherapee would not write.
+    InvalidMark {
+        key: &'static str,
+        value: String,
+    },
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Io(err) => write!(f, "{err}"),
+            Error::NotText => write!(f, "not a text file, probably corrupted"),
+            Error::Malformed { line } => write!(f, "malformed line {line}"),
+            Error::InvalidMark { key, value } => write!(f, "invalid {key} value: {value:?}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
+    }
+}
+
+/// Path of the sidecar of an image: the full file name plus `.pp3`.
+pub fn sidecar_path(image: &Path) -> PathBuf {
+    let mut path = image.as_os_str().to_os_string();
+    path.push(".pp3");
+    PathBuf::from(path)
+}
+
+/// A parsed `.pp3`, kept line by line (line endings included) so that
+/// writing it back reproduces the original bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+    lines: Vec<String>,
+}
+
+enum Line<'a> {
+    /// Blank line or `#` comment.
+    Other,
+    Section(&'a str),
+    Entry {
+        key: &'a str,
+        value: &'a str,
+    },
+}
+
+fn classify(line: &str) -> Option<Line<'_>> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return Some(Line::Other);
+    }
+    if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+        return Some(Line::Section(name));
+    }
+    let (key, value) = line.split_once('=')?;
+    Some(Line::Entry {
+        key: key.trim(),
+        value: value.trim(),
+    })
+}
+
+impl Profile {
+    /// Parses the text of a `.pp3`, rejecting anything that does not look
+    /// like a key file.
+    pub fn parse(text: &str) -> Result<Profile, Error> {
+        if text.contains('\0') {
+            return Err(Error::NotText);
+        }
+        let lines: Vec<String> = text.split_inclusive('\n').map(String::from).collect();
+        let mut in_section = false;
+        for (index, line) in lines.iter().enumerate() {
+            match classify(line) {
+                Some(Line::Other) => {}
+                Some(Line::Section(_)) => in_section = true,
+                Some(Line::Entry { .. }) if in_section => {}
+                _ => return Err(Error::Malformed { line: index + 1 }),
+            }
+        }
+        Ok(Profile { lines })
+    }
+
+    /// Reads and parses a `.pp3` file.
+    pub fn load(path: &Path) -> Result<Profile, Error> {
+        let bytes = fs::read(path)?;
+        let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
+        Profile::parse(&text)
+    }
+
+    /// Iterates over the `(line index, key, value)` of the `[General]` entries.
+    fn general_entries(&self) -> impl Iterator<Item = (usize, &str, &str)> {
+        let mut section = "";
+        self.lines
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, line)| match classify(line)? {
+                Line::Section(name) => {
+                    section = name;
+                    None
+                }
+                Line::Entry { key, value } if section == GENERAL => Some((index, key, value)),
+                _ => None,
+            })
+    }
+
+    /// The marks stored in the profile; missing keys get their default.
+    pub fn marks(&self) -> Result<Marks, Error> {
+        let mut marks = Marks::default();
+        for (_, key, value) in self.general_entries() {
+            let invalid = |key| Error::InvalidMark {
+                key,
+                value: value.to_owned(),
+            };
+            match key {
+                RANK => {
+                    marks.rank = value
+                        .parse()
+                        .ok()
+                        .filter(|rank| *rank <= MAX_RANK)
+                        .ok_or_else(|| invalid(RANK))?;
+                }
+                COLOR_LABEL => {
+                    marks.color = value
+                        .parse()
+                        .ok()
+                        .and_then(ColorLabel::from_number)
+                        .ok_or_else(|| invalid(COLOR_LABEL))?;
+                }
+                IN_TRASH => {
+                    marks.in_trash = match value {
+                        "true" | "1" => true,
+                        "false" | "0" => false,
+                        _ => return Err(invalid(IN_TRASH)),
+                    };
+                }
+                _ => {}
+            }
+        }
+        Ok(marks)
+    }
+
+    /// Writes the marks, touching only their lines. Missing keys are added
+    /// at the end of `[General]` (created if needed), except `Rank` when it
+    /// is 0, which RawTherapee leaves out.
+    ///
+    /// # Panics
+    ///
+    /// If `marks.rank` is greater than [`MAX_RANK`].
+    pub fn set_marks(&mut self, marks: &Marks) {
+        assert!(marks.rank <= MAX_RANK, "rank out of range: {}", marks.rank);
+        self.set(RANK, &marks.rank.to_string(), marks.rank > 0);
+        self.set(COLOR_LABEL, &(marks.color as u8).to_string(), true);
+        self.set(IN_TRASH, &marks.in_trash.to_string(), true);
+    }
+
+    fn set(&mut self, key: &str, value: &str, add_if_missing: bool) {
+        let indexes: Vec<usize> = self
+            .general_entries()
+            .filter(|(_, k, _)| *k == key)
+            .map(|(index, _, _)| index)
+            .collect();
+
+        if indexes.is_empty() {
+            if add_if_missing {
+                let at = self.general_insertion_point();
+                let line = format!("{key}={value}{}", self.newline());
+                self.lines.insert(at, line);
+            }
+            return;
+        }
+        for index in indexes {
+            let line = &mut self.lines[index];
+            let ending = &line[line.trim_end_matches(['\r', '\n']).len()..];
+            *line = format!("{key}={value}{ending}");
+        }
+    }
+
+    /// Index right after the last entry of `[General]`, appending the
+    /// section at the end of the file if there is none.
+    fn general_insertion_point(&mut self) -> usize {
+        let header = self
+            .lines
+            .iter()
+            .position(|line| matches!(classify(line), Some(Line::Section(GENERAL))));
+        let Some(header) = header else {
+            let newline = self.newline();
+            if let Some(last) = self.lines.last_mut() {
+                if !last.ends_with('\n') {
+                    last.push_str(newline);
+                }
+                self.lines.push(newline.to_owned());
+            }
+            self.lines.push(format!("[{GENERAL}]{newline}"));
+            return self.lines.len();
+        };
+
+        let mut at = header + 1;
+        for (index, line) in self.lines.iter().enumerate().skip(header + 1) {
+            match classify(line) {
+                Some(Line::Section(_)) => break,
+                Some(Line::Entry { .. }) => at = index + 1,
+                _ => {}
+            }
+        }
+        at
+    }
+
+    /// Line ending used by the file, `\n` by default.
+    fn newline(&self) -> &'static str {
+        match self.lines.first() {
+            Some(line) if line.ends_with("\r\n") => "\r\n",
+            _ => "\n",
+        }
+    }
+
+    /// Writes the profile atomically: a temporary file is written in the
+    /// same directory then renamed, so a crash never leaves a truncated
+    /// `.pp3`. An existing file keeps its permissions.
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        let permissions = match fs::metadata(path) {
+            Ok(metadata) => metadata.permissions(),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Permissions::from_mode(0o644),
+            Err(err) => return Err(err),
+        };
+
+        let mut file = tempfile::Builder::new()
+            .prefix(".corrode-")
+            .suffix(".pp3.tmp")
+            .permissions(permissions)
+            .tempfile_in(dir)?;
+        file.write_all(self.to_string().as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|err| err.error)?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Profile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.lines.iter().try_for_each(|line| f.write_str(line))
+    }
+}
+
+/// Writes the marks into the `.pp3` at `path`.
+///
+/// An existing file is updated in place and must be readable: a corrupted
+/// file is reported and left untouched. A missing file is created from
+/// `base`, which should be RawTherapee's default profile, so that the
+/// photo keeps the rendering RawTherapee would give it.
+pub fn write_marks(path: &Path, marks: &Marks, base: &Profile) -> Result<(), Error> {
+    let mut profile = match Profile::load(path) {
+        Ok(profile) => profile,
+        Err(Error::Io(err)) if err.kind() == io::ErrorKind::NotFound => base.clone(),
+        Err(err) => return Err(err),
+    };
+    profile.set_marks(marks);
+    profile.save(path)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shortened from a real sidecar written by RawTherapee 5.11.
+    const RAWTHERAPEE_PP3: &str = "\
+[Version]
+AppVersion=5.11
+Version=351
+
+[General]
+ColorLabel=0
+InTrash=false
+
+[Exposure]
+Auto=false
+Clip=0.02
+Curve=1;0.0071174400000000001;0;0.090969999999999995;
+
+[RAW]
+CA=true
+";
+
+    /// Shortened from RawTherapee's default profile, which has no `[General]`.
+    const DEFAULT_PROFILE: &str = "\
+[Exposure]
+Auto=false
+HistogramMatching=true
+
+[RAW]
+CA=true
+";
+
+    fn parse(text: &str) -> Profile {
+        Profile::parse(text).unwrap()
+    }
+
+    fn marks(rank: u8, color: ColorLabel, in_trash: bool) -> Marks {
+        Marks {
+            rank,
+            color,
+            in_trash,
+        }
+    }
+
+    #[test]
+    fn sidecar_path_appends_pp3_to_the_full_name() {
+        assert_eq!(
+            sidecar_path(Path::new("/photos/P1011259.RW2")),
+            Path::new("/photos/P1011259.RW2.pp3")
+        );
+    }
+
+    #[test]
+    fn writing_back_unchanged_keeps_every_byte() {
+        for text in [
+            RAWTHERAPEE_PP3,
+            DEFAULT_PROFILE,
+            "",
+            "[General]\r\nInTrash=false\r\n",
+            "[General]\nInTrash=false",
+            "# comment\n[A]\nkey = value with ; and = signs\n",
+        ] {
+            assert_eq!(parse(text).to_string(), text);
+        }
+    }
+
+    #[test]
+    fn reads_marks_and_defaults_missing_rank_to_zero() {
+        assert_eq!(parse(RAWTHERAPEE_PP3).marks().unwrap(), Marks::default());
+        let text = "[General]\nRank=4\nColorLabel=3\nInTrash=true\n";
+        assert_eq!(
+            parse(text).marks().unwrap(),
+            marks(4, ColorLabel::Green, true)
+        );
+    }
+
+    #[test]
+    fn ignores_marks_outside_general() {
+        let text = "[Other]\nRank=4\n[General]\nColorLabel=1\n";
+        assert_eq!(
+            parse(text).marks().unwrap(),
+            marks(0, ColorLabel::Red, false)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_mark_values() {
+        for (text, key) in [
+            ("[General]\nRank=6\n", RANK),
+            ("[General]\nRank=-1\n", RANK),
+            ("[General]\nColorLabel=9\n", COLOR_LABEL),
+            ("[General]\nInTrash=maybe\n", IN_TRASH),
+        ] {
+            match parse(text).marks() {
+                Err(Error::InvalidMark { key: k, .. }) => assert_eq!(k, key),
+                other => panic!("{text:?}: unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_files_that_are_not_key_files() {
+        assert!(matches!(Profile::parse("a\0b"), Err(Error::NotText)));
+        assert!(matches!(
+            Profile::parse("[General]\nnot a key\n"),
+            Err(Error::Malformed { line: 2 })
+        ));
+        assert!(matches!(
+            Profile::parse("Rank=1\n[General]\n"),
+            Err(Error::Malformed { line: 1 })
+        ));
+    }
+
+    #[test]
+    fn set_marks_only_changes_the_mark_lines() {
+        let mut profile = parse(RAWTHERAPEE_PP3);
+        profile.set_marks(&marks(3, ColorLabel::Blue, true));
+
+        let expected = RAWTHERAPEE_PP3.replace(
+            "ColorLabel=0\nInTrash=false\n",
+            "ColorLabel=4\nInTrash=true\nRank=3\n",
+        );
+        assert_eq!(profile.to_string(), expected);
+        assert_eq!(profile.marks().unwrap(), marks(3, ColorLabel::Blue, true));
+    }
+
+    #[test]
+    fn set_marks_does_not_add_a_zero_rank_but_updates_an_existing_one() {
+        let mut profile = parse(RAWTHERAPEE_PP3);
+        profile.set_marks(&Marks::default());
+        assert_eq!(profile.to_string(), RAWTHERAPEE_PP3);
+
+        let mut profile = parse("[General]\nRank=2\n");
+        profile.set_marks(&Marks::default());
+        assert_eq!(
+            profile.to_string(),
+            "[General]\nRank=0\nColorLabel=0\nInTrash=false\n"
+        );
+    }
+
+    #[test]
+    fn set_marks_adds_general_to_a_profile_without_it() {
+        let mut profile = parse(DEFAULT_PROFILE);
+        profile.set_marks(&marks(5, ColorLabel::Red, false));
+        let expected =
+            format!("{DEFAULT_PROFILE}\n[General]\nRank=5\nColorLabel=1\nInTrash=false\n");
+        assert_eq!(profile.to_string(), expected);
+
+        let mut profile = parse("[RAW]\nCA=true");
+        profile.set_marks(&Marks::default());
+        assert_eq!(
+            profile.to_string(),
+            "[RAW]\nCA=true\n\n[General]\nColorLabel=0\nInTrash=false\n"
+        );
+    }
+
+    #[test]
+    fn set_marks_keeps_windows_line_endings() {
+        let mut profile = parse("[General]\r\nInTrash=false\r\n");
+        profile.set_marks(&marks(1, ColorLabel::None, true));
+        assert_eq!(
+            profile.to_string(),
+            "[General]\r\nInTrash=true\r\nRank=1\r\nColorLabel=0\r\n"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "rank out of range")]
+    fn set_marks_panics_on_a_rank_above_five() {
+        parse("").set_marks(&marks(6, ColorLabel::None, false));
+    }
+
+    #[test]
+    fn write_marks_updates_an_existing_file_and_keeps_its_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("P1011259.RW2.pp3");
+        fs::write(&path, RAWTHERAPEE_PP3).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(0o640)).unwrap();
+
+        write_marks(
+            &path,
+            &marks(2, ColorLabel::Yellow, false),
+            &parse(DEFAULT_PROFILE),
+        )
+        .unwrap();
+
+        let profile = Profile::load(&path).unwrap();
+        assert_eq!(
+            profile.marks().unwrap(),
+            marks(2, ColorLabel::Yellow, false)
+        );
+        assert!(
+            profile
+                .to_string()
+                .contains("Curve=1;0.0071174400000000001;")
+        );
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640);
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "temporary file left"
+        );
+    }
+
+    #[test]
+    fn write_marks_creates_a_missing_file_from_the_base_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("P1011259.RW2.pp3");
+
+        write_marks(
+            &path,
+            &marks(1, ColorLabel::None, false),
+            &parse(DEFAULT_PROFILE),
+        )
+        .unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(DEFAULT_PROFILE));
+        assert!(text.ends_with("[General]\nRank=1\nColorLabel=0\nInTrash=false\n"));
+    }
+
+    #[test]
+    fn write_marks_leaves_a_corrupted_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("_1174030.RW2.pp3");
+        let garbage = [0x8b, 0x25, 0x00, 0xff, 0x22, 0x0a];
+        fs::write(&path, garbage).unwrap();
+
+        let result = write_marks(
+            &path,
+            &marks(3, ColorLabel::None, false),
+            &parse(DEFAULT_PROFILE),
+        );
+
+        assert!(matches!(result, Err(Error::NotText)));
+        assert_eq!(fs::read(&path).unwrap(), garbage);
+    }
+}

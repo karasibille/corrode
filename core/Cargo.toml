@@ -7,6 +7,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-
-[dev-dependencies]
 tempfile = "3.27.0"
