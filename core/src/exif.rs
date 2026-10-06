@@ -2,11 +2,12 @@
 //!
 //! The RAW is read when the shot has one, as it is the only file where a
 //! Panasonic camera writes the lens name in a standard tag. A JPEG-only
-//! shot gets everything but the lens.
+//! shot gets everything but the lens. Only the beginning of the files is
+//! read, where the metadata is: a whole shoot can be read in a moment.
 
 use std::fmt;
-use std::fs;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use rawler::decoders::RawDecodeParams;
@@ -24,6 +25,9 @@ pub struct Exif {
     /// Local date and time the photo was taken, as `2020-08-03 08:03:35`,
     /// which sorts chronologically as text.
     pub taken: Option<String>,
+    /// The same instant to the millisecond, as milliseconds since 1970 in
+    /// the camera's local time: enough to compare photos of a shoot.
+    pub taken_ms: Option<i64>,
     /// Exposure time in seconds, as a fraction.
     pub exposure_time: Option<(u32, u32)>,
     pub f_number: Option<f32>,
@@ -108,16 +112,37 @@ pub fn read(shot: &Shot) -> Result<Exif, Error> {
     }
 }
 
+/// How much of a file is read for its metadata: a RW2 has it in its first
+/// 64 KB, a JPEG in a segment of at most 64 KB near the start.
+const HEAD: usize = 256 * 1024;
+
+fn head(path: &Path) -> Result<Vec<u8>, Error> {
+    let mut data = Vec::with_capacity(HEAD);
+    File::open(path)
+        .and_then(|file| file.take(HEAD as u64).read_to_end(&mut data))
+        .map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    Ok(data)
+}
+
 fn read_raw(path: &Path) -> Result<Exif, Error> {
     let error = |source| Error::Raw {
         path: path.to_owned(),
         source,
     };
-    let source = RawSource::new(path).map_err(|err| error(err.into()))?;
-    let decoder = rawler::get_decoder(&source).map_err(error)?;
-    let metadata = decoder
-        .raw_metadata(&source, &RawDecodeParams::default())
-        .map_err(error)?;
+    let metadata = |source: &RawSource| {
+        rawler::get_decoder(source)?.raw_metadata(source, &RawDecodeParams::default())
+    };
+    // The head is enough for the formats tried; others may point further.
+    let metadata = match metadata(&RawSource::new_from_slice(&head(path)?)) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            let source = RawSource::new(path).map_err(|err: io::Error| error(err.into()))?;
+            metadata(&source).map_err(error)?
+        }
+    };
 
     let mut exif = from_rawler(&metadata.exif);
     exif.camera = camera(&metadata.make, &metadata.model);
@@ -129,11 +154,9 @@ fn read_raw(path: &Path) -> Result<Exif, Error> {
 }
 
 fn read_jpeg(path: &Path) -> Result<Exif, Error> {
-    let data = fs::read(path).map_err(|source| Error::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    Ok(jpeg::exif(&data).and_then(parse_tiff).unwrap_or_default())
+    Ok(jpeg::exif(&head(path)?)
+        .and_then(parse_tiff)
+        .unwrap_or_default())
 }
 
 /// Parses EXIF data stored as a TIFF structure, as in a JPEG's APP1 segment.
@@ -168,6 +191,10 @@ fn from_rawler(exif: &rawler::exif::Exif) -> Exif {
     let ratio = |r: &Rational| (r.d != 0).then(|| r.n as f32 / r.d as f32);
     Exif {
         taken: exif.date_time_original.as_deref().and_then(date),
+        taken_ms: exif
+            .date_time_original
+            .as_deref()
+            .and_then(|text| timestamp_ms(text, exif.sub_sec_time_original.as_deref())),
         exposure_time: exif.exposure_time.map(|r| (r.n, r.d)),
         f_number: exif.fnumber.as_ref().and_then(ratio),
         iso: exif
@@ -193,9 +220,73 @@ fn date(text: &str) -> Option<String> {
     Some(format!("{} {time}", day.replace(':', "-")))
 }
 
+/// `2020:08:03 08:03:35` plus sub-second digits (`667` for .667 s) as
+/// milliseconds since 1970-01-01 00:00:00, without time zone.
+fn timestamp_ms(text: &str, sub_second: Option<&str>) -> Option<i64> {
+    let normalized = date(text)?;
+    let numbers: Vec<i64> = normalized
+        .split(['-', ' ', ':'])
+        .map(|part| part.parse().ok())
+        .collect::<Option<_>>()?;
+    let &[year, month, day, hour, minute, second] = numbers.as_slice() else {
+        return None;
+    };
+    // Sub-second digits are a decimal fraction: "5" is 500 ms, "29" 290 ms.
+    let millis = sub_second
+        .map(|digits| digits.trim_matches(|c: char| !c.is_ascii_digit()))
+        .filter(|digits| !digits.is_empty())
+        .map_or(0, |digits| {
+            format!("{digits:0<3}")[..3].parse::<i64>().unwrap_or(0)
+        });
+    let days = days_from_civil(year, month, day);
+    Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000 + millis)
+}
+
+/// Days since 1970-01-01 of a date of the proleptic Gregorian calendar,
+/// after Howard Hinnant's `days_from_civil`.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    #[test]
+    fn timestamps_count_milliseconds_across_days_and_years() {
+        let at = |text, sub| timestamp_ms(text, sub);
+        assert_eq!(at("2020:08:03 08:03:35", None), Some(1_596_441_815_000));
+        assert_eq!(
+            at("2020:08:03 08:03:35", Some("667")),
+            Some(1_596_441_815_667)
+        );
+        assert_eq!(
+            at("2020:08:03 08:03:35", Some("5")),
+            Some(1_596_441_815_500)
+        );
+        assert_eq!(
+            at("2020:08:03 08:03:35", Some("29")),
+            Some(1_596_441_815_290)
+        );
+        assert_eq!(
+            at("2020:08:03 08:03:35", Some("1234")),
+            Some(1_596_441_815_123)
+        );
+        assert_eq!(
+            at("2020:08:03 08:03:35", Some("  ")),
+            Some(1_596_441_815_000)
+        );
+        assert_eq!(at("2000:02:29 23:59:59", None), Some(951_868_799_000));
+        assert_eq!(at("2000:03:01 00:00:00", None), Some(951_868_800_000));
+        assert_eq!(at("0000:00:00 00:00:00", None), None);
+    }
 
     #[test]
     fn exposure_times_read_like_on_a_camera() {
@@ -330,6 +421,7 @@ mod tests {
             exif,
             Exif {
                 taken: Some("2020-08-03 08:03:35".into()),
+                taken_ms: Some(1_596_441_815_000),
                 exposure_time: Some((10, 5000)),
                 f_number: Some(5.6),
                 iso: Some(1600),
