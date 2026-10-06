@@ -18,7 +18,8 @@ use std::time::Duration;
 use corrode_core::exif::Exif;
 use corrode_core::pairing::{self, Shot};
 use corrode_core::picture::Picture;
-use corrode_core::pp3::{self, Marks};
+use corrode_core::pp3::{self, ColorLabel, Marks};
+use corrode_core::rawtherapee::{self, Config};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect, Size};
@@ -28,7 +29,7 @@ use ratatui::widgets::Paragraph;
 use ratatui_image::picker::Picker;
 use ratatui_image::{FontSize, Image};
 
-use app::{App, Command, Mode, zoom_crop};
+use app::{App, Command, MarkChange, Mode, zoom_crop};
 use encoder::{Encoded, Encoder, Request};
 use loader::{Job, Loaded, Loader};
 
@@ -57,10 +58,15 @@ struct Viewer {
     requested: Option<Request>,
     shown: Option<Encoded>,
     view: (u32, u32),
+    /// RawTherapee's settings, needed to create sidecars; marks cannot be
+    /// written without them.
+    config: Result<Config, String>,
+    /// Result of the last action, shown until the next key.
+    message: Option<Result<String, String>>,
 }
 
 impl Viewer {
-    fn new(shots: Vec<Shot>, picker: Picker) -> Viewer {
+    fn new(shots: Vec<Shot>, picker: Picker, config: Result<Config, String>) -> Viewer {
         let shots = Arc::new(shots);
         let (loaded_tx, loaded) = mpsc::channel();
         let (encoded_tx, encoded) = mpsc::channel();
@@ -82,6 +88,8 @@ impl Viewer {
             requested: None,
             shown: None,
             view: (0, 0),
+            config,
+            message: None,
         }
     }
 
@@ -157,8 +165,18 @@ impl Viewer {
     }
 
     fn key(&mut self, key: KeyEvent) {
+        self.message = None;
         let zoomed = matches!(self.app.mode, Mode::Zoom { .. });
         let command = match key.code {
+            KeyCode::Char(c) if rank_key(c).is_some() => {
+                Command::Mark(MarkChange::Rank(rank_key(c).unwrap_or_default()))
+            }
+            KeyCode::Char('r') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Red)),
+            KeyCode::Char('y') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Yellow)),
+            KeyCode::Char('g') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Green)),
+            KeyCode::Char('b') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Blue)),
+            KeyCode::Char('p') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Purple)),
+            KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
             KeyCode::Char('q') => Command::Quit,
             KeyCode::Esc if zoomed => Command::ToggleZoom,
             KeyCode::Esc => Command::Quit,
@@ -167,18 +185,48 @@ impl Viewer {
             KeyCode::Right | KeyCode::Char('l') if zoomed => Command::Pan { dx: 1, dy: 0 },
             KeyCode::Up | KeyCode::Char('k') if zoomed => Command::Pan { dx: 0, dy: -1 },
             KeyCode::Down | KeyCode::Char('j') if zoomed => Command::Pan { dx: 0, dy: 1 },
-            KeyCode::Right | KeyCode::Char('l' | ' ' | 'n') | KeyCode::PageDown => Command::Next,
-            KeyCode::Left | KeyCode::Char('h' | 'p') | KeyCode::Backspace | KeyCode::PageUp => {
+            KeyCode::Right | KeyCode::Char('l' | ' ') | KeyCode::PageDown => Command::Next,
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace | KeyCode::PageUp => {
                 Command::Previous
             }
-            KeyCode::Home | KeyCode::Char('g') => Command::First,
-            KeyCode::End | KeyCode::Char('G') => Command::Last,
+            KeyCode::Home => Command::First,
+            KeyCode::End => Command::Last,
             _ => return,
         };
+        if let Command::Mark(change) = command {
+            self.mark(change);
+            return;
+        }
         let full_size = self
             .full_picture()
             .map(|p| (p.image.width(), p.image.height()));
         self.app.apply(command, full_size, self.view);
+    }
+
+    /// Changes the marks of the current shot and writes them right away.
+    fn mark(&mut self, change: MarkChange) {
+        let index = self.app.index;
+        let shot = &self.shots[index];
+        let result = match &self.config {
+            Err(err) => Err(format!("cannot write marks: {err}")),
+            Ok(config) => rawtherapee::read_marks(shot)
+                .and_then(|marks| {
+                    let marks = change.apply(marks);
+                    config.write_marks(shot, &marks).map(|()| marks)
+                })
+                .map_err(|err| format!("cannot write marks: {err}")),
+        };
+        self.message = Some(match result {
+            Ok(marks) => {
+                let saved = format!("{} saved", describe(&marks));
+                match self.infos.get_mut(&index) {
+                    Some(info) => info.0 = Ok(marks),
+                    None => self.scheduled = None,
+                }
+                Ok(saved)
+            }
+            Err(err) => Err(err),
+        });
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -243,8 +291,15 @@ impl Viewer {
             status_area,
         );
         frame.render_widget(Paragraph::new(self.info_line()), info_area);
-        let help = "←/→ browse · z zoom 100% · arrows/hjkl move when zoomed · Home/End · q quit";
-        frame.render_widget(Paragraph::new(help).fg(Color::DarkGray), help_area);
+        let help = match &self.message {
+            Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
+            Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
+            None => Line::from(
+                " ←/→ browse · 1-5 0 rank · r y g b p color · x reject · z zoom 100% · q quit",
+            )
+            .fg(Color::DarkGray),
+        };
+        frame.render_widget(Paragraph::new(help), help_area);
     }
 
     fn status_line(&self) -> String {
@@ -315,6 +370,21 @@ fn describe(marks: &Marks) -> String {
     format!("{stars} {:?}{trash}", marks.color)
 }
 
+/// The rating a key sets: digits, or the keys under them on an AZERTY
+/// keyboard, where digits need Shift.
+fn rank_key(key: char) -> Option<u8> {
+    match key {
+        '0'..='5' => key.to_digit(10).and_then(|digit| u8::try_from(digit).ok()),
+        'à' => Some(0),
+        '&' => Some(1),
+        'é' => Some(2),
+        '"' => Some(3),
+        '\'' => Some(4),
+        '(' => Some(5),
+        _ => None,
+    }
+}
+
 /// A rectangle of the given size centred in `area`.
 fn centered(area: Rect, size: Size) -> Rect {
     let width = size.width.min(area.width);
@@ -342,9 +412,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("{}: no JPEG or RAW file", dir.display()).into());
     }
 
+    let config = Config::load().map_err(|err| err.to_string());
     let mut terminal = ratatui::init();
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let mut viewer = Viewer::new(shots, picker);
+    let mut viewer = Viewer::new(shots, picker, config);
 
     let result = (|| -> Result<(), Box<dyn Error>> {
         while !viewer.app.quit {
@@ -363,4 +434,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ranks_come_from_digits_or_the_azerty_keys_above_letters() {
+        for (keys, rank) in [
+            ("0à", 0),
+            ("1&", 1),
+            ("2é", 2),
+            ("3\"", 3),
+            ("4'", 4),
+            ("5(", 5),
+        ] {
+            for key in keys.chars() {
+                assert_eq!(rank_key(key), Some(rank), "{key}");
+            }
+        }
+        assert_eq!(rank_key('6'), None);
+        assert_eq!(rank_key('a'), None);
+    }
 }

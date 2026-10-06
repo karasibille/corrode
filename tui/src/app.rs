@@ -1,6 +1,8 @@
 //! State of the viewer and what the keys do to it, without any terminal
 //! or decoding, so that it can be tested on its own.
 
+use corrode_core::pp3::{ColorLabel, Marks};
+
 /// What is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -24,7 +26,38 @@ pub enum Command {
         dx: i32,
         dy: i32,
     },
+    /// Changes the marks of the current shot; written by the viewer.
+    Mark(MarkChange),
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkChange {
+    /// Sets the star rating, 0 clearing it.
+    Rank(u8),
+    /// Sets this color label, or clears it if the shot already has it.
+    ToggleColor(ColorLabel),
+    ToggleTrash,
+}
+
+impl MarkChange {
+    pub fn apply(self, marks: Marks) -> Marks {
+        match self {
+            MarkChange::Rank(rank) => Marks { rank, ..marks },
+            MarkChange::ToggleColor(color) => Marks {
+                color: if marks.color == color {
+                    ColorLabel::None
+                } else {
+                    color
+                },
+                ..marks
+            },
+            MarkChange::ToggleTrash => Marks {
+                in_trash: !marks.in_trash,
+                ..marks
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -76,6 +109,7 @@ impl App {
                     self.mode = Mode::Zoom { x, y };
                 }
             }
+            Command::Mark(_) => {}
             Command::Quit => self.quit = true,
         }
     }
@@ -153,6 +187,24 @@ mod tests {
         assert_eq!(app.mode, Mode::Zoom { x: 2592, y: 1944 });
         app.apply(Command::ToggleZoom, Some(IMAGE), VIEW);
         assert_eq!(app.mode, Mode::Fit);
+    }
+
+    #[test]
+    fn mark_changes_set_or_toggle() {
+        let marks = Marks {
+            rank: 2,
+            color: ColorLabel::Red,
+            in_trash: false,
+        };
+        assert_eq!(MarkChange::Rank(5).apply(marks).rank, 5);
+        assert_eq!(MarkChange::Rank(0).apply(marks).rank, 0);
+        let blue = MarkChange::ToggleColor(ColorLabel::Blue).apply(marks);
+        assert_eq!((blue.rank, blue.color), (2, ColorLabel::Blue));
+        let red = MarkChange::ToggleColor(ColorLabel::Red);
+        assert_eq!(red.apply(marks).color, ColorLabel::None);
+        let rejected = MarkChange::ToggleTrash.apply(marks);
+        assert!(rejected.in_trash);
+        assert!(!MarkChange::ToggleTrash.apply(rejected).in_trash);
     }
 
     #[test]
