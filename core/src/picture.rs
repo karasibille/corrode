@@ -1,21 +1,24 @@
 //! Decoded pictures of a shot, whether or not it has a JPEG.
 //!
-//! The camera JPEG is used when there is one. Otherwise the RAW provides
-//! its embedded preview (1920×1440 on a Panasonic GX9), quick enough to
-//! browse with, or a full demosaic (about 0.6 s for 20 Mpx) for 100% zoom.
+//! The camera JPEG is used when there is one: to browse with, the preview
+//! it may embed (1440×1080 on a Panasonic GX9, about 20 ms instead of 180 ms
+//! for the full image). Otherwise the RAW provides its embedded preview
+//! (1920×1440), or a full demosaic (about 0.6 s for 20 Mpx) for 100% zoom.
 //! The demosaiced RAW does not have the camera's look: it is darker and
 //! flatter than the JPEG, but shows the same detail. Every picture is
 //! turned upright according to the EXIF orientation of its file.
 
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use image::metadata::Orientation;
-use image::{DynamicImage, ImageDecoder, ImageReader};
+use image::{DynamicImage, ImageFormat};
 use rawler::decoders::{Decoder, RawDecodeParams};
 use rawler::imgop::develop::RawDevelop;
 use rawler::rawsource::RawSource;
 
+use crate::jpeg;
 use crate::pairing::Shot;
 
 /// Where a picture comes from.
@@ -23,6 +26,8 @@ use crate::pairing::Shot;
 pub enum Origin {
     /// The camera JPEG, full size.
     Jpeg,
+    /// The preview embedded in the camera JPEG.
+    JpegPreview,
     /// The preview embedded in the RAW, smaller than the sensor.
     RawPreview,
     /// The RAW demosaiced at full size.
@@ -65,11 +70,11 @@ impl std::error::Error for Error {
     }
 }
 
-/// A picture to browse with: the JPEG, else the RAW's embedded preview,
-/// else the demosaiced RAW if it has no preview.
+/// A picture to browse with: the JPEG's embedded preview, else the JPEG,
+/// else the RAW's embedded preview, else the demosaiced RAW.
 pub fn preview(shot: &Shot) -> Result<Picture, Error> {
     if let Some(jpeg) = &shot.jpeg {
-        return decode_jpeg(jpeg);
+        return Jpeg::read(jpeg)?.preview();
     }
     let raw = Raw::open(raw_of(shot))?;
     match raw.preview()? {
@@ -81,7 +86,7 @@ pub fn preview(shot: &Shot) -> Result<Picture, Error> {
 /// A full-size picture, for 100% zoom: the JPEG, else the demosaiced RAW.
 pub fn full(shot: &Shot) -> Result<Picture, Error> {
     match &shot.jpeg {
-        Some(jpeg) => decode_jpeg(jpeg),
+        Some(jpeg) => Jpeg::read(jpeg)?.full(),
         None => Raw::open(raw_of(shot))?.develop(),
     }
 }
@@ -90,25 +95,54 @@ fn raw_of(shot: &Shot) -> &Path {
     shot.raw.as_deref().expect("a shot without JPEG has a RAW")
 }
 
-/// Decodes a JPEG, turned upright according to its EXIF orientation.
-fn decode_jpeg(path: &Path) -> Result<Picture, Error> {
-    let error = |source| Error::Jpeg {
-        path: path.to_owned(),
-        source,
-    };
-    let mut decoder = ImageReader::open(path)
-        .map_err(|err| error(err.into()))?
-        .with_guessed_format()
-        .map_err(|err| error(err.into()))?
-        .into_decoder()
-        .map_err(error)?;
-    let orientation = decoder.orientation().map_err(error)?;
-    let mut image = DynamicImage::from_decoder(decoder).map_err(error)?;
-    image.apply_orientation(orientation);
-    Ok(Picture {
-        image,
-        origin: Origin::Jpeg,
-    })
+/// A JPEG file read once for its orientation, preview and pixels.
+struct Jpeg<'a> {
+    path: &'a Path,
+    data: Vec<u8>,
+    orientation: Orientation,
+}
+
+impl<'a> Jpeg<'a> {
+    fn read(path: &'a Path) -> Result<Jpeg<'a>, Error> {
+        let data = fs::read(path).map_err(|err| Error::Jpeg {
+            path: path.to_owned(),
+            source: err.into(),
+        })?;
+        let orientation = jpeg::exif(&data)
+            .and_then(Orientation::from_exif_chunk)
+            .unwrap_or(Orientation::NoTransforms);
+        Ok(Jpeg {
+            path,
+            data,
+            orientation,
+        })
+    }
+
+    /// The embedded preview, or the full image if there is none or it
+    /// cannot be decoded.
+    fn preview(&self) -> Result<Picture, Error> {
+        jpeg::mpf_preview(&self.data)
+            .and_then(|data| self.decode(data, Origin::JpegPreview).ok())
+            .map_or_else(|| self.full(), Ok)
+    }
+
+    fn full(&self) -> Result<Picture, Error> {
+        self.decode(&self.data, Origin::Jpeg)
+    }
+
+    /// Decodes JPEG data from this file, turned upright: an embedded
+    /// preview has the orientation of the main image.
+    fn decode(&self, data: &[u8], origin: Origin) -> Result<Picture, Error> {
+        let mut image =
+            image::load_from_memory_with_format(data, ImageFormat::Jpeg).map_err(|source| {
+                Error::Jpeg {
+                    path: self.path.to_owned(),
+                    source,
+                }
+            })?;
+        image.apply_orientation(self.orientation);
+        Ok(Picture { image, origin })
+    }
 }
 
 /// A RAW file opened once for both its orientation and its pixels.
@@ -179,26 +213,59 @@ impl<'a> Raw<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use image::codecs::jpeg::JpegEncoder;
-    use image::{ImageEncoder, ImageFormat, Rgb, RgbImage};
+    use image::{ExtendedColorType, ImageEncoder, Rgb, RgbImage};
 
     use super::*;
+    use crate::jpeg::tests::{encode, exif_orientation, with_mpf_preview};
 
-    fn write_jpeg(path: &Path, width: u32, height: u32) {
-        RgbImage::new(width, height)
-            .save_with_format(path, ImageFormat::Jpeg)
-            .unwrap();
+    fn shot(jpeg: Option<PathBuf>, raw: Option<PathBuf>) -> Shot {
+        Shot {
+            stem: "P1011259".into(),
+            jpeg,
+            raw,
+        }
     }
 
-    /// EXIF data holding only an Orientation tag (big-endian TIFF layout).
-    fn exif_orientation(value: u8) -> Vec<u8> {
-        let mut exif = b"MM\0\x2a\0\0\0\x08".to_vec(); // header, first IFD at 8
-        exif.extend([0, 1]); // one entry
-        exif.extend([0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, value, 0, 0]); // Orientation, SHORT
-        exif.extend([0, 0, 0, 0]); // no next IFD
-        exif
+    fn size(picture: &Picture) -> (u32, u32) {
+        (picture.image.width(), picture.image.height())
+    }
+
+    #[test]
+    fn the_jpeg_is_used_for_preview_and_full_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let jpeg = dir.path().join("P1011259.JPG");
+        fs::write(&jpeg, encode(64, 48, None)).unwrap();
+        // The RAW is garbage: it must not even be read.
+        let raw = dir.path().join("P1011259.RW2");
+        fs::write(&raw, b"not a raw").unwrap();
+        let pair = shot(Some(jpeg), Some(raw));
+
+        for picture in [preview(&pair).unwrap(), full(&pair).unwrap()] {
+            assert_eq!(picture.origin, Origin::Jpeg);
+            assert_eq!(size(&picture), (64, 48));
+        }
+    }
+
+    #[test]
+    fn the_preview_embedded_in_the_jpeg_is_used_to_browse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("P1011259.JPG");
+        let main = encode(64, 48, Some(exif_orientation(6)));
+        fs::write(&path, with_mpf_preview(&main, &encode(32, 24, None), 0)).unwrap();
+        let jpeg_only = shot(Some(path.clone()), None);
+
+        let picture = preview(&jpeg_only).unwrap();
+        assert_eq!(picture.origin, Origin::JpegPreview);
+        assert_eq!(size(&picture), (24, 32), "turned like the main image");
+        let picture = full(&jpeg_only).unwrap();
+        assert_eq!(picture.origin, Origin::Jpeg);
+        assert_eq!(size(&picture), (48, 64));
+
+        // A broken preview falls back to the main image.
+        let broken = b"\xff\xd8 not a jpeg";
+        fs::write(&path, with_mpf_preview(&main, broken, 0)).unwrap();
+        assert_eq!(preview(&jpeg_only).unwrap().origin, Origin::Jpeg);
     }
 
     #[test]
@@ -216,7 +283,7 @@ mod tests {
         let mut encoder = JpegEncoder::new_with_quality(fs::File::create(&path).unwrap(), 95);
         encoder.set_exif_metadata(exif_orientation(6)).unwrap(); // rotate 90° clockwise
         encoder
-            .write_image(stored.as_raw(), 64, 48, image::ExtendedColorType::Rgb8)
+            .write_image(stored.as_raw(), 64, 48, ExtendedColorType::Rgb8)
             .unwrap();
 
         let picture = preview(&shot(Some(path), None)).unwrap();
@@ -228,30 +295,6 @@ mod tests {
         assert!(red > 200 && blue < 50, "top should be red");
         let [red, _, blue] = image.get_pixel(24, 56).0;
         assert!(blue > 200 && red < 50, "bottom should be blue");
-    }
-
-    fn shot(jpeg: Option<PathBuf>, raw: Option<PathBuf>) -> Shot {
-        Shot {
-            stem: "P1011259".into(),
-            jpeg,
-            raw,
-        }
-    }
-
-    #[test]
-    fn the_jpeg_is_used_for_preview_and_full_when_present() {
-        let dir = tempfile::tempdir().unwrap();
-        let jpeg = dir.path().join("P1011259.JPG");
-        write_jpeg(&jpeg, 64, 48);
-        // The RAW is garbage: it must not even be read.
-        let raw = dir.path().join("P1011259.RW2");
-        fs::write(&raw, b"not a raw").unwrap();
-        let pair = shot(Some(jpeg), Some(raw));
-
-        for picture in [preview(&pair).unwrap(), full(&pair).unwrap()] {
-            assert_eq!(picture.origin, Origin::Jpeg);
-            assert_eq!((picture.image.width(), picture.image.height()), (64, 48));
-        }
     }
 
     #[test]

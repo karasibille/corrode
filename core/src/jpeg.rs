@@ -1,0 +1,209 @@
+//! Reading the metadata segments of a JPEG file without decoding it.
+//!
+//! Cameras store the EXIF data in an APP1 segment and, in the Multi-Picture
+//! Format (CIPA DC-007), an index of extra images in an APP2 segment. A
+//! Panasonic GX9 appends a 1440×1080 preview this way, which decodes about
+//! nine times faster than the full 20 Mpx image.
+
+/// Iterates over the `(marker, payload offset, payload)` of the segments
+/// before the image data. Stops at the first malformed segment.
+fn segments(data: &[u8]) -> impl Iterator<Item = (u8, usize, &[u8])> {
+    let mut pos = if data.starts_with(&[0xff, 0xd8]) {
+        2
+    } else {
+        data.len()
+    };
+    std::iter::from_fn(move || {
+        // Markers may be preceded by any number of 0xff fill bytes.
+        while data.get(pos..pos + 2) == Some(&[0xff, 0xff]) {
+            pos += 1;
+        }
+        let &[0xff, marker] = data.get(pos..pos + 2)? else {
+            return None;
+        };
+        // Start of scan or end of image: the metadata is over.
+        if marker == 0xda || marker == 0xd9 {
+            return None;
+        }
+        let length = usize::from(u16::from_be_bytes(
+            data.get(pos + 2..pos + 4)?.try_into().ok()?,
+        ));
+        let payload = data.get(pos + 4..pos + 2 + length)?;
+        let segment = (marker, pos + 4, payload);
+        pos += 2 + length;
+        Some(segment)
+    })
+}
+
+/// The EXIF data of the file, as a TIFF structure (without the `Exif\0\0`
+/// prefix of the APP1 segment).
+pub fn exif(data: &[u8]) -> Option<&[u8]> {
+    segments(data).find_map(|(marker, _, payload)| match marker {
+        0xe1 => payload.strip_prefix(b"Exif\0\0"),
+        _ => None,
+    })
+}
+
+/// The largest extra image listed in the Multi-Picture Format index, as a
+/// slice of `data`: usually a preview of the main image.
+pub fn mpf_preview(data: &[u8]) -> Option<&[u8]> {
+    let (offset, payload) = segments(data).find_map(|(marker, offset, payload)| {
+        (marker == 0xe2 && payload.starts_with(b"MPF\0")).then_some((offset, payload))
+    })?;
+    // Offsets in the index are relative to the TIFF header after "MPF\0".
+    let base = offset + 4;
+    let tiff = Tiff::new(&payload[4..])?;
+
+    let first_ifd = tiff.u32(4)?;
+    let entry_count = tiff.u16(first_ifd)?;
+    let (count, value) = (0..entry_count).find_map(|index| {
+        let entry = first_ifd + 2 + 12 * usize::from(index);
+        // Tag 0xb002, MP Entry: 16 bytes per image, the main one first.
+        (tiff.u16(entry)? == 0xb002).then(|| Some((tiff.u32(entry + 4)?, tiff.u32(entry + 8)?)))?
+    })?;
+
+    (1..count / 16)
+        .filter_map(|index| {
+            let record = value + 16 * index;
+            let size = tiff.u32(record + 4)?;
+            let start = base + tiff.u32(record + 8)?;
+            let image = data.get(start..start.checked_add(size)?)?;
+            image.starts_with(&[0xff, 0xd8]).then_some(image)
+        })
+        .max_by_key(|image| image.len())
+}
+
+/// A TIFF structure, little- or big-endian.
+struct Tiff<'a> {
+    data: &'a [u8],
+    big_endian: bool,
+}
+
+impl<'a> Tiff<'a> {
+    fn new(data: &'a [u8]) -> Option<Tiff<'a>> {
+        let big_endian = match data.get(..4)? {
+            b"II*\0" => false,
+            b"MM\0*" => true,
+            _ => return None,
+        };
+        Some(Tiff { data, big_endian })
+    }
+
+    fn u16(&self, at: usize) -> Option<u16> {
+        let bytes = self.data.get(at..at + 2)?.try_into().ok()?;
+        Some(if self.big_endian {
+            u16::from_be_bytes(bytes)
+        } else {
+            u16::from_le_bytes(bytes)
+        })
+    }
+
+    fn u32(&self, at: usize) -> Option<usize> {
+        let bytes = self.data.get(at..at + 4)?.try_into().ok()?;
+        let value = if self.big_endian {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        };
+        usize::try_from(value).ok()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A tiny but complete JPEG, as the image crate writes it.
+    pub(crate) fn encode(width: u32, height: u32, exif: Option<Vec<u8>>) -> Vec<u8> {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ExtendedColorType, ImageEncoder};
+
+        let mut data = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut data, 90);
+        if let Some(exif) = exif {
+            encoder.set_exif_metadata(exif).unwrap();
+        }
+        let pixels = vec![128; (3 * width * height) as usize];
+        encoder
+            .write_image(&pixels, width, height, ExtendedColorType::Rgb8)
+            .unwrap();
+        data
+    }
+
+    /// EXIF data holding only an Orientation tag (big-endian TIFF layout).
+    pub(crate) fn exif_orientation(value: u8) -> Vec<u8> {
+        let mut exif = b"MM\0\x2a\0\0\0\x08".to_vec(); // header, first IFD at 8
+        exif.extend([0, 1]); // one entry
+        exif.extend([0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, value, 0, 0]); // Orientation, SHORT
+        exif.extend([0, 0, 0, 0]); // no next IFD
+        exif
+    }
+
+    /// Inserts an MPF index right after the SOI of `main` and appends
+    /// `preview`, as cameras do. `shift` moves the preview's offset.
+    pub(crate) fn with_mpf_preview(main: &[u8], preview: &[u8], shift: i64) -> Vec<u8> {
+        // Little-endian TIFF: header, an IFD with the MP Entry tag only,
+        // then the two 16-byte records it points to (at offset 26).
+        let segment_length = 2 + 4 + 26 + 32;
+        let base = 2 + 4 + 4; // SOI, APP2 marker and length, "MPF\0"
+        let main_length = main.len() + segment_length + 2;
+        let preview_offset = (main_length - base) as i64 + shift;
+
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend(8u32.to_le_bytes());
+        tiff.extend(1u16.to_le_bytes());
+        tiff.extend([0x02, 0xb0, 7, 0]); // tag 0xb002, UNDEFINED
+        tiff.extend(32u32.to_le_bytes());
+        tiff.extend(26u32.to_le_bytes());
+        tiff.extend(0u32.to_le_bytes()); // no next IFD
+        for (attribute, size, offset) in [
+            (0x2003_0000u32, main_length as u32, 0u32),
+            (0x0001_0001, preview.len() as u32, preview_offset as u32),
+        ] {
+            tiff.extend(attribute.to_le_bytes());
+            tiff.extend(size.to_le_bytes());
+            tiff.extend(offset.to_le_bytes());
+            tiff.extend([0; 4]);
+        }
+
+        let mut data = vec![0xff, 0xd8, 0xff, 0xe2];
+        data.extend((segment_length as u16).to_be_bytes());
+        data.extend(b"MPF\0");
+        data.extend(tiff);
+        data.extend(&main[2..]);
+        data.extend(preview);
+        data
+    }
+
+    #[test]
+    fn finds_the_exif_data() {
+        let data = encode(16, 8, Some(exif_orientation(6)));
+        assert_eq!(exif(&data), Some(&exif_orientation(6)[..]));
+        assert_eq!(exif(&encode(16, 8, None)), None);
+    }
+
+    #[test]
+    fn finds_the_mpf_preview() {
+        let preview = encode(32, 24, None);
+        let data = with_mpf_preview(&encode(64, 48, None), &preview, 0);
+        assert_eq!(mpf_preview(&data), Some(&preview[..]));
+    }
+
+    #[test]
+    fn ignores_missing_or_broken_mpf_data() {
+        assert_eq!(mpf_preview(&encode(64, 48, None)), None);
+        let preview = encode(32, 24, None);
+        let main = encode(64, 48, None);
+        // Offset pointing past the end, or not at the start of a JPEG.
+        assert_eq!(mpf_preview(&with_mpf_preview(&main, &preview, 1000)), None);
+        assert_eq!(mpf_preview(&with_mpf_preview(&main, &preview, 1)), None);
+    }
+
+    #[test]
+    fn rejects_data_that_is_not_a_jpeg() {
+        for data in [&b""[..], b"\xff", b"not a jpeg", b"\xff\xd8\xff\xe1\xff"] {
+            assert_eq!(exif(data), None);
+            assert_eq!(mpf_preview(data), None);
+        }
+    }
+}
