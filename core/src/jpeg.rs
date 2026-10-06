@@ -5,6 +5,11 @@
 //! Panasonic GX9 appends a 1440×1080 preview this way, which decodes about
 //! nine times faster than the full 20 Mpx image. The EXIF data itself holds
 //! a 160×120 thumbnail, within the first 64 KB of the file.
+//!
+//! Functions taking the head of a file give the place of an image in the
+//! whole file, so that only its bytes need to be read from the disk.
+
+use std::ops::Range;
 
 /// Iterates over the `(marker, payload offset, payload)` of the segments
 /// before the image data. Stops at the first malformed segment.
@@ -48,7 +53,14 @@ pub fn exif(data: &[u8]) -> Option<&[u8]> {
 /// The largest extra image listed in the Multi-Picture Format index, as a
 /// slice of `data`: usually a preview of the main image.
 pub fn mpf_preview(data: &[u8]) -> Option<&[u8]> {
-    let (offset, payload) = segments(data).find_map(|(marker, offset, payload)| {
+    let image = data.get(mpf_preview_range(data)?)?;
+    image.starts_with(&[0xff, 0xd8]).then_some(image)
+}
+
+/// Where the largest extra image of the Multi-Picture Format index lies in
+/// the file, from its head: the index comes first, the images last.
+pub fn mpf_preview_range(head: &[u8]) -> Option<Range<usize>> {
+    let (offset, payload) = segments(head).find_map(|(marker, offset, payload)| {
         (marker == 0xe2 && payload.starts_with(b"MPF\0")).then_some((offset, payload))
     })?;
     // Offsets in the index are relative to the TIFF header after "MPF\0".
@@ -62,11 +74,11 @@ pub fn mpf_preview(data: &[u8]) -> Option<&[u8]> {
         .filter_map(|index| {
             let record = value + 16 * index;
             let size = tiff.u32(record + 4)?;
-            let start = base + tiff.u32(record + 8)?;
-            let image = data.get(start..start.checked_add(size)?)?;
-            image.starts_with(&[0xff, 0xd8]).then_some(image)
+            let start = base.checked_add(tiff.u32(record + 8)?)?;
+            Some(start..start.checked_add(size)?)
         })
-        .max_by_key(|image| image.len())
+        .filter(|range| !range.is_empty())
+        .max_by_key(|range| range.len())
 }
 
 /// The thumbnail referenced by EXIF data (a TIFF structure, as returned by
@@ -83,12 +95,16 @@ pub fn exif_thumbnail(exif: &[u8]) -> Option<&[u8]> {
 /// The JPEG preview embedded in a Panasonic RW2 file, as far as `data`
 /// goes: reading the head of the file is enough for its EXIF data.
 pub fn rw2_preview(data: &[u8]) -> Option<&[u8]> {
-    let tiff = Tiff::new(data).filter(|tiff| tiff.panasonic)?;
-    let ifd = tiff.u32(4)?;
-    let (count, start) = tiff.entry_with_count(ifd, 0x002e)?; // JpgFromRaw
-    let end = start.checked_add(count)?.min(data.len());
-    let image = data.get(start..end)?;
+    let range = rw2_preview_range(data)?;
+    let image = data.get(range.start..range.end.min(data.len()))?;
     image.starts_with(&[0xff, 0xd8]).then_some(image)
+}
+
+/// Where the JPEG preview of a Panasonic RW2 file lies, from its head.
+pub fn rw2_preview_range(head: &[u8]) -> Option<Range<usize>> {
+    let tiff = Tiff::new(head).filter(|tiff| tiff.panasonic)?;
+    let (count, start) = tiff.entry_with_count(tiff.u32(4)?, 0x002e)?; // JpgFromRaw
+    Some(start..start.checked_add(count)?)
 }
 
 /// A TIFF structure, little- or big-endian, or a Panasonic RW2 file,
@@ -231,6 +247,14 @@ pub(crate) mod tests {
         let preview = encode(32, 24, None);
         let data = with_mpf_preview(&encode(64, 48, None), &preview, 0);
         assert_eq!(mpf_preview(&data), Some(&preview[..]));
+    }
+
+    #[test]
+    fn locates_the_mpf_preview_from_the_head_alone() {
+        let preview = encode(32, 24, None);
+        let data = with_mpf_preview(&encode(64, 48, None), &preview, 0);
+        let range = mpf_preview_range(&data[..200]).unwrap();
+        assert_eq!(range, data.len() - preview.len()..data.len());
     }
 
     #[test]
