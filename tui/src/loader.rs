@@ -14,7 +14,7 @@ use corrode_core::exif::{self, Exif};
 use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
 use corrode_core::pp3::Marks;
-use corrode_core::rawtherapee;
+use corrode_core::{rawtherapee, sharpness};
 use image::DynamicImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,6 +24,8 @@ pub enum Job {
     Head(usize),
     Preview(usize),
     Full(usize),
+    /// Sharpness of the preview around the focus point.
+    Sharpness(usize),
 }
 
 pub enum Loaded {
@@ -32,6 +34,10 @@ pub enum Loaded {
         exif: Result<Exif, String>,
         thumbnail: Option<DynamicImage>,
         marks: Result<Marks, String>,
+    },
+    Sharpness {
+        index: usize,
+        score: Option<f32>,
     },
     Picture {
         job: Job,
@@ -128,5 +134,13 @@ fn run(shots: &[Shot], job: Job) -> Loaded {
         },
         Job::Preview(index) => picture(index, picture::preview),
         Job::Full(index) => picture(index, picture::full),
+        Job::Sharpness(index) => {
+            let shot = &shots[index];
+            let focus = exif::read(shot).ok().and_then(|exif| exif.focus_point);
+            let score = picture::preview(shot)
+                .ok()
+                .map(|preview| sharpness::score(&preview.image, focus));
+            Loaded::Sharpness { index, score }
+        }
     }
 }

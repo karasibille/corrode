@@ -64,8 +64,10 @@ struct Viewer {
     thumbnails: HashMap<usize, Option<DynamicImage>>,
     thumbnail_protocols: HashMap<usize, Protocol>,
     thumbnail_size: Size,
+    sharpness: HashMap<usize, Option<f32>>,
     timings: HashMap<Job, Duration>,
-    scheduled: Option<usize>,
+    /// The shot and burst the jobs were last scheduled for.
+    scheduled: Option<(usize, Range<usize>)>,
     requested: Option<Request>,
     shown: Option<Encoded>,
     view: (u32, u32),
@@ -102,6 +104,7 @@ impl Viewer {
             marks: HashMap::new(),
             thumbnails: HashMap::new(),
             thumbnail_protocols: HashMap::new(),
+            sharpness: HashMap::new(),
             thumbnail_size: Size::new(
                 u16::try_from(thumbnail_columns).unwrap_or(u16::MAX).max(4),
                 THUMB_ROWS,
@@ -129,14 +132,18 @@ impl Viewer {
     }
 
     /// Asks for the current shot first, then its neighbours, then the
-    /// full picture for the zoom, then the head of every other file, the
-    /// closest first, so that bursts take shape around the current shot.
+    /// full picture for the zoom, then the sharpness of its burst, then the
+    /// head of every other file, the closest first, so that bursts take
+    /// shape around the current shot. Runs again when the shot changes, or
+    /// when its burst grows as files are read.
     fn schedule(&mut self) {
         let index = self.app.index;
-        if self.scheduled == Some(index) {
+        let (burst, _) = self.burst();
+        let scheduled = Some((index, burst.clone()));
+        if self.scheduled == scheduled {
             return;
         }
-        self.scheduled = Some(index);
+        self.scheduled = scheduled;
 
         self.previews.retain(|&i, _| i.abs_diff(index) <= KEEP);
         if self.full.as_ref().is_some_and(|(i, _)| *i != index) {
@@ -153,6 +160,7 @@ impl Viewer {
         let mut jobs = vec![Job::Head(index), Job::Preview(index)];
         jobs.extend(neighbours.flatten().map(Job::Preview));
         jobs.push(Job::Full(index));
+        jobs.extend(burst.map(Job::Sharpness));
         let mut others: Vec<usize> = (0..self.shots.len()).filter(|&i| i != index).collect();
         others.sort_by_key(|&i| i.abs_diff(index));
         jobs.extend(others.into_iter().map(Job::Head));
@@ -160,6 +168,7 @@ impl Viewer {
             Job::Head(i) => self.times[i] == Time::Unknown,
             Job::Preview(i) => !self.previews.contains_key(&i),
             Job::Full(i) => self.full.as_ref().is_none_or(|(full, _)| *full != i),
+            Job::Sharpness(i) => !self.sharpness.contains_key(&i),
         });
         self.loader.want(jobs);
     }
@@ -179,6 +188,9 @@ impl Viewer {
                     // Marks set meanwhile from the keyboard are more recent.
                     self.marks.entry(index).or_insert(marks);
                     self.thumbnails.insert(index, thumbnail);
+                }
+                Loaded::Sharpness { index, score } => {
+                    self.sharpness.insert(index, score);
                 }
                 Loaded::Picture {
                     job,
@@ -218,6 +230,13 @@ impl Viewer {
             KeyCode::Char('p') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Purple)),
             KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
             KeyCode::Char('k') => return self.keep_in_burst(),
+            KeyCode::Char('s') => match self.sharpest() {
+                Some(index) => Command::GoTo(index),
+                None => {
+                    self.message = Some(Err("sharpness not measured yet".to_owned()));
+                    return;
+                }
+            },
             KeyCode::Char('q') => Command::Quit,
             KeyCode::Esc if zoomed => Command::ToggleZoom,
             KeyCode::Esc => Command::Quit,
@@ -244,6 +263,23 @@ impl Viewer {
             .full_picture()
             .map(|p| (p.image.width(), p.image.height()));
         self.app.apply(command, full_size, self.view);
+    }
+
+    /// The sharpest shot of the current burst, among those measured, if
+    /// there is more than one.
+    fn sharpest(&self) -> Option<usize> {
+        let scored: Vec<(usize, f32)> = self
+            .burst()
+            .0
+            .filter_map(|i| Some((i, (*self.sharpness.get(&i)?)?)))
+            .collect();
+        if scored.len() < 2 {
+            return None;
+        }
+        scored
+            .into_iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
     }
 
     /// The first shot after the current burst, or the last shot.
@@ -368,7 +404,7 @@ impl Viewer {
             Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
             Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
             None => Line::from(
-                " ←/→ shot · ↑/↓ burst · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · z zoom · q quit",
+                " ←/→ shot · ↑/↓ burst · s sharpest ◆ · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · z zoom · q quit",
             )
             .fg(Color::DarkGray),
         };
@@ -422,6 +458,7 @@ impl Viewer {
     /// each with its marks below.
     fn draw_strip(&mut self, frame: &mut Frame, area: Rect) {
         let (burst, complete) = self.burst();
+        let sharpest = self.sharpest();
         let index = self.app.index;
         let slot_width = self.thumbnail_size.width + 1;
         let visible = usize::from((area.width / slot_width).max(1));
@@ -456,11 +493,14 @@ impl Viewer {
                 None => frame.render_widget(Paragraph::new("·").centered(), picture_area),
             }
 
-            let (label, rejected) = match self.marks.get(&i) {
+            let (mut label, rejected) = match self.marks.get(&i) {
                 Some(Ok(marks)) => (short_marks(marks), marks.in_trash),
                 Some(Err(_)) => ("?".to_owned(), false),
                 None => (String::new(), false),
             };
+            if Some(i) == sharpest {
+                label = format!("◆ {label}").trim_end().to_owned();
+            }
             let mut style = Style::new();
             if rejected {
                 style = style.fg(Color::Red);
@@ -504,6 +544,16 @@ impl Viewer {
             burst.len(),
             if complete { "" } else { "+" }
         );
+        let sharpness = match (
+            self.sharpness.get(&index).copied().flatten(),
+            self.sharpest()
+                .and_then(|best| self.sharpness.get(&best).copied().flatten()),
+        ) {
+            (Some(score), Some(best)) if best > 0.0 => {
+                format!("  sharpness {:.0}%", 100.0 * score / best)
+            }
+            _ => String::new(),
+        };
         let (picture, job) = match self.app.mode {
             Mode::Fit => (self.previews.get(&index), Job::Preview(index)),
             Mode::Zoom { .. } => (self.full.as_ref().map(|(_, p)| p), Job::Full(index)),
@@ -531,7 +581,7 @@ impl Viewer {
             String::new()
         };
         format!(
-            " {}/{}  {}  {files}  {marks}  {burst}  {zoom} {origin}  decode {} · draw {} · {}{reading}",
+            " {}/{}  {}  {files}  {marks}  {burst}{sharpness}  {zoom} {origin}  decode {} · draw {} · {}{reading}",
             index + 1,
             self.shots.len(),
             shot.stem.to_string_lossy(),
