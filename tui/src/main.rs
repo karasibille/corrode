@@ -35,7 +35,7 @@ use ratatui_image::{FontSize, Image, Resize};
 
 use app::{App, Command, Filter, MarkChange, Mode, Time, burst_around, next_matching, zoom_crop};
 use encoder::{Encoded, Encoder, Request};
-use loader::{Job, Loaded, Loader};
+use loader::{Assessment, Job, Loaded, Loader};
 
 /// Shots decoded ahead on each side of the current one.
 const PRELOAD: usize = 2;
@@ -66,7 +66,7 @@ struct Viewer {
     thumbnails: HashMap<usize, Option<DynamicImage>>,
     thumbnail_protocols: HashMap<usize, Protocol>,
     thumbnail_size: Size,
-    sharpness: HashMap<usize, Option<f32>>,
+    assessments: HashMap<usize, Option<Assessment>>,
     timings: HashMap<Job, Duration>,
     /// The shot and burst the jobs were last scheduled for.
     scheduled: Option<(usize, Range<usize>)>,
@@ -113,7 +113,7 @@ impl Viewer {
             marks: HashMap::new(),
             thumbnails: HashMap::new(),
             thumbnail_protocols: HashMap::new(),
-            sharpness: HashMap::new(),
+            assessments: HashMap::new(),
             thumbnail_size: Size::new(
                 u16::try_from(thumbnail_columns).unwrap_or(u16::MAX).max(4),
                 THUMB_ROWS,
@@ -141,7 +141,7 @@ impl Viewer {
     }
 
     /// Asks for the current shot first, then its neighbours, then the
-    /// full picture for the zoom, then the sharpness of its burst, then the
+    /// full picture for the zoom, then the quality of its burst, then the
     /// head of every other file, the closest first, so that bursts take
     /// shape around the current shot. Runs again when the shot changes, or
     /// when its burst grows as files are read.
@@ -169,7 +169,7 @@ impl Viewer {
         let mut jobs = vec![Job::Head(index), Job::Preview(index)];
         jobs.extend(neighbours.flatten().map(Job::Preview));
         jobs.push(Job::Full(index));
-        jobs.extend(burst.map(Job::Sharpness));
+        jobs.extend(burst.map(Job::Assess));
         let mut others: Vec<usize> = (0..self.shots.len()).filter(|&i| i != index).collect();
         others.sort_by_key(|&i| i.abs_diff(index));
         jobs.extend(others.into_iter().map(Job::Head));
@@ -177,7 +177,7 @@ impl Viewer {
             Job::Head(i) => self.times[i] == Time::Unknown,
             Job::Preview(i) => !self.previews.contains_key(&i),
             Job::Full(i) => self.full.as_ref().is_none_or(|(full, _)| *full != i),
-            Job::Sharpness(i) => !self.sharpness.contains_key(&i),
+            Job::Assess(i) => !self.assessments.contains_key(&i),
         });
         self.loader.want(jobs);
     }
@@ -198,8 +198,8 @@ impl Viewer {
                     self.marks.entry(index).or_insert(marks);
                     self.thumbnails.insert(index, thumbnail);
                 }
-                Loaded::Sharpness { index, score } => {
-                    self.sharpness.insert(index, score);
+                Loaded::Assessment { index, assessment } => {
+                    self.assessments.insert(index, assessment);
                 }
                 Loaded::Picture {
                     job,
@@ -352,20 +352,28 @@ impl Viewer {
         );
     }
 
-    /// The sharpest shot of the current burst, among those measured, if
-    /// there is more than one.
+    /// The quality of a shot, if measured.
+    fn assessment(&self, index: usize) -> Option<Assessment> {
+        self.assessments.get(&index).copied().flatten()
+    }
+
+    /// The sharpest shot of the current burst among those measured, if
+    /// there is more than one; shots with light bands only when all of
+    /// them have some.
     fn sharpest(&self) -> Option<usize> {
-        let scored: Vec<(usize, f32)> = self
+        let measured: Vec<(usize, Assessment)> = self
             .burst()
             .0
-            .filter_map(|i| Some((i, (*self.sharpness.get(&i)?)?)))
+            .filter_map(|i| Some((i, self.assessment(i)?)))
             .collect();
-        if scored.len() < 2 {
+        if measured.len() < 2 {
             return None;
         }
-        scored
+        let clean = measured.iter().any(|(_, a)| !a.banded);
+        measured
             .into_iter()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .filter(|(_, a)| !clean || !a.banded)
+            .max_by(|a, b| a.1.sharpness.total_cmp(&b.1.sharpness))
             .map(|(i, _)| i)
     }
 
@@ -491,7 +499,7 @@ impl Viewer {
             Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
             Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
             None => Line::from(
-                " ←/→ shot · ↑/↓ burst · s sharpest ◆ · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · f filter · o/O RawTherapee · z zoom · q quit",
+                " ←/→ shot · ↑/↓ burst · s sharpest without bands ◆ (≋ bands) · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · f filter · o/O RawTherapee · z zoom · q quit",
             )
             .fg(Color::DarkGray),
         };
@@ -585,6 +593,9 @@ impl Viewer {
                 Some(Err(_)) => ("?".to_owned(), false),
                 None => (String::new(), false),
             };
+            if self.assessment(i).is_some_and(|a| a.banded) {
+                label = format!("≋ {label}").trim_end().to_owned();
+            }
             if Some(i) == sharpest {
                 label = format!("◆ {label}").trim_end().to_owned();
             }
@@ -631,16 +642,19 @@ impl Viewer {
             burst.len(),
             if complete { "" } else { "+" }
         );
-        let sharpness = match (
-            self.sharpness.get(&index).copied().flatten(),
-            self.sharpest()
-                .and_then(|best| self.sharpness.get(&best).copied().flatten()),
-        ) {
-            (Some(score), Some(best)) if best > 0.0 => {
-                format!("  sharpness {:.0}%", 100.0 * score / best)
+        let best = self
+            .sharpest()
+            .and_then(|best| self.assessment(best))
+            .map(|best| best.sharpness);
+        let mut sharpness = match (self.assessment(index), best) {
+            (Some(current), Some(best)) if best > 0.0 => {
+                format!("  sharpness {:.0}%", 100.0 * current.sharpness / best)
             }
             _ => String::new(),
         };
+        if self.assessment(index).is_some_and(|a| a.banded) {
+            sharpness.push_str("  ≋ light bands");
+        }
         let (picture, job) = match self.app.mode {
             Mode::Fit => (self.previews.get(&index), Job::Preview(index)),
             Mode::Zoom { .. } => (self.full.as_ref().map(|(_, p)| p), Job::Full(index)),

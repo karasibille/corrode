@@ -14,7 +14,7 @@ use corrode_core::exif::{self, Exif};
 use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
 use corrode_core::pp3::Marks;
-use corrode_core::{rawtherapee, sharpness};
+use corrode_core::{banding, rawtherapee, sharpness};
 use image::DynamicImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,8 +24,16 @@ pub enum Job {
     Head(usize),
     Preview(usize),
     Full(usize),
-    /// Sharpness of the preview around the focus point.
-    Sharpness(usize),
+    /// Sharpness around the focus point, and light bands, from the preview.
+    Assess(usize),
+}
+
+/// What the preview of a shot tells about its quality.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Assessment {
+    pub sharpness: f32,
+    /// Whether LED lighting left light bands on it.
+    pub banded: bool,
 }
 
 pub enum Loaded {
@@ -35,9 +43,9 @@ pub enum Loaded {
         thumbnail: Option<DynamicImage>,
         marks: Result<Marks, String>,
     },
-    Sharpness {
+    Assessment {
         index: usize,
-        score: Option<f32>,
+        assessment: Option<Assessment>,
     },
     Picture {
         job: Job,
@@ -134,13 +142,14 @@ fn run(shots: &[Shot], job: Job) -> Loaded {
         },
         Job::Preview(index) => picture(index, picture::preview),
         Job::Full(index) => picture(index, picture::full),
-        Job::Sharpness(index) => {
+        Job::Assess(index) => {
             let shot = &shots[index];
             let focus = exif::read(shot).ok().and_then(|exif| exif.focus_point);
-            let score = picture::preview(shot)
-                .ok()
-                .map(|preview| sharpness::score(&preview.image, focus));
-            Loaded::Sharpness { index, score }
+            let assessment = picture::preview(shot).ok().map(|preview| Assessment {
+                sharpness: sharpness::score(&preview.image, focus),
+                banded: banding::analyze(&preview.image).is_some_and(|bands| bands.is_banded()),
+            });
+            Loaded::Assessment { index, assessment }
         }
     }
 }
