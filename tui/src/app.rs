@@ -1,6 +1,8 @@
 //! State of the viewer and what the keys do to it, without any terminal
 //! or decoding, so that it can be tested on its own.
 
+use std::ops::Range;
+
 use corrode_core::pp3::{ColorLabel, Marks};
 
 /// What is on screen.
@@ -20,6 +22,7 @@ pub enum Command {
     Previous,
     First,
     Last,
+    GoTo(usize),
     ToggleZoom,
     /// Moves the zoomed view by a fraction of the screen, in eighths.
     Pan {
@@ -87,6 +90,7 @@ impl App {
             Command::Previous => self.go_to(self.index.saturating_sub(1)),
             Command::First => self.go_to(0),
             Command::Last => self.go_to(self.count.saturating_sub(1)),
+            Command::GoTo(index) => self.go_to(index),
             Command::ToggleZoom => {
                 self.mode = match (self.mode, full_size) {
                     (Mode::Fit, Some((width, height))) => Mode::Zoom {
@@ -123,6 +127,51 @@ impl App {
             self.mode = Mode::Fit;
         }
     }
+}
+
+/// What is known of the time a shot was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Time {
+    /// Not read yet.
+    Unknown,
+    /// Read, but the file has no time.
+    Missing,
+    /// Milliseconds, as `Exif::taken_ms`.
+    At(i64),
+}
+
+/// The burst holding `index`, from the times read so far, and whether
+/// both of its ends are known: an end next to a shot whose time is not
+/// read yet may still grow.
+pub fn burst_around(times: &[Time], index: usize, max_gap_ms: i64) -> (Range<usize>, bool) {
+    // Whether shots `i` and `i + 1` belong to the same burst, if known.
+    let linked = |i: usize| match (times[i], times[i + 1]) {
+        (Time::Unknown, _) | (_, Time::Unknown) => None,
+        (Time::At(a), Time::At(b)) => Some((0..=max_gap_ms).contains(&(b - a))),
+        _ => Some(false),
+    };
+    let (mut start, mut end, mut complete) = (index, index + 1, true);
+    while start > 0 {
+        match linked(start - 1) {
+            Some(true) => start -= 1,
+            Some(false) => break,
+            None => {
+                complete = false;
+                break;
+            }
+        }
+    }
+    while end < times.len() {
+        match linked(end - 1) {
+            Some(true) => end += 1,
+            Some(false) => break,
+            None => {
+                complete = false;
+                break;
+            }
+        }
+    }
+    (start..end, complete)
 }
 
 /// Keeps a zoom centre where the view stays inside the image.
@@ -187,6 +236,30 @@ mod tests {
         assert_eq!(app.mode, Mode::Zoom { x: 2592, y: 1944 });
         app.apply(Command::ToggleZoom, Some(IMAGE), VIEW);
         assert_eq!(app.mode, Mode::Fit);
+    }
+
+    #[test]
+    fn bursts_are_found_around_a_shot() {
+        use Time::{At, Missing, Unknown};
+        let times = [
+            At(0),
+            At(180),
+            At(360),
+            At(5000),
+            At(5180),
+            Missing,
+            At(9000),
+        ];
+        assert_eq!(burst_around(&times, 1, 300), (0..3, true));
+        assert_eq!(burst_around(&times, 0, 300), (0..3, true));
+        assert_eq!(burst_around(&times, 4, 300), (3..5, true));
+        assert_eq!(burst_around(&times, 5, 300), (5..6, true));
+        assert_eq!(burst_around(&times, 6, 300), (6..7, true));
+
+        let partly_read = [At(0), At(180), Unknown, At(5000)];
+        assert_eq!(burst_around(&partly_read, 0, 300), (0..2, false));
+        assert_eq!(burst_around(&partly_read, 3, 300), (3..4, false));
+        assert_eq!(burst_around(&[Unknown], 0, 300), (0..1, true));
     }
 
     #[test]

@@ -1,7 +1,7 @@
-//! `corrode`: browse the shots of a directory in the terminal.
+//! `corrode`: cull the shots of a directory in the terminal.
 //!
-//! This first version is a spike: it checks that browsing and 100% zoom
-//! are fluid enough with real shoots before building the culling features.
+//! Shots are shown one at a time, with a strip of the burst they belong
+//! to. Marks are written to RawTherapee sidecars as soon as they are set.
 
 mod app;
 mod encoder;
@@ -10,16 +10,19 @@ mod loader;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use corrode_core::bursts;
 use corrode_core::exif::Exif;
 use corrode_core::pairing::{self, Shot};
 use corrode_core::picture::Picture;
 use corrode_core::pp3::{self, ColorLabel, Marks};
 use corrode_core::rawtherapee::{self, Config};
+use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect, Size};
@@ -27,9 +30,10 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui_image::picker::Picker;
-use ratatui_image::{FontSize, Image};
+use ratatui_image::protocol::Protocol;
+use ratatui_image::{FontSize, Image, Resize};
 
-use app::{App, Command, MarkChange, Mode, zoom_crop};
+use app::{App, Command, MarkChange, Mode, Time, burst_around, zoom_crop};
 use encoder::{Encoded, Encoder, Request};
 use loader::{Job, Loaded, Loader};
 
@@ -38,8 +42,8 @@ const PRELOAD: usize = 2;
 /// Previews kept in memory on each side, a bit more than preloaded so
 /// that going back and forth does not decode again.
 const KEEP: usize = 3;
-
-type Info = (Result<Marks, String>, Result<Exif, String>);
+/// Height of the burst thumbnails, in rows; a line of marks goes below.
+const THUMB_ROWS: u16 = 5;
 
 struct Viewer {
     shots: Arc<Vec<Shot>>,
@@ -48,11 +52,18 @@ struct Viewer {
     loaded: Receiver<Loaded>,
     encoder: Encoder,
     encoded: Receiver<Encoded>,
+    /// Used for the thumbnails, which are small enough to encode here.
+    picker: Picker,
     font: FontSize,
     protocol_name: String,
     previews: HashMap<usize, Result<Arc<Picture>, String>>,
     full: Option<(usize, Result<Arc<Picture>, String>)>,
-    infos: HashMap<usize, Info>,
+    times: Vec<Time>,
+    exifs: HashMap<usize, Result<Exif, String>>,
+    marks: HashMap<usize, Result<Marks, String>>,
+    thumbnails: HashMap<usize, Option<DynamicImage>>,
+    thumbnail_protocols: HashMap<usize, Protocol>,
+    thumbnail_size: Size,
     timings: HashMap<Job, Duration>,
     scheduled: Option<usize>,
     requested: Option<Request>,
@@ -70,19 +81,31 @@ impl Viewer {
         let shots = Arc::new(shots);
         let (loaded_tx, loaded) = mpsc::channel();
         let (encoded_tx, encoded) = mpsc::channel();
-        let threads = thread_count();
+        let font = picker.font_size();
+        // Thumbnails are 4:3, the shape of the sensor.
+        let thumbnail_columns = (u32::from(THUMB_ROWS) * u32::from(font.height) * 4 / 3)
+            .div_ceil(u32::from(font.width.max(1)));
         Viewer {
             app: App::new(shots.len()),
-            loader: Loader::new(Arc::clone(&shots), threads, loaded_tx),
+            loader: Loader::new(Arc::clone(&shots), thread_count(), loaded_tx),
             loaded,
-            font: picker.font_size(),
+            font,
             protocol_name: format!("{:?}", picker.protocol_type()),
-            encoder: Encoder::new(picker, encoded_tx),
+            encoder: Encoder::new(picker.clone(), encoded_tx),
             encoded,
+            picker,
+            times: vec![Time::Unknown; shots.len()],
             shots,
             previews: HashMap::new(),
             full: None,
-            infos: HashMap::new(),
+            exifs: HashMap::new(),
+            marks: HashMap::new(),
+            thumbnails: HashMap::new(),
+            thumbnail_protocols: HashMap::new(),
+            thumbnail_size: Size::new(
+                u16::try_from(thumbnail_columns).unwrap_or(u16::MAX).max(4),
+                THUMB_ROWS,
+            ),
             timings: HashMap::new(),
             scheduled: None,
             requested: None,
@@ -100,8 +123,14 @@ impl Viewer {
         }
     }
 
+    /// The burst of the current shot, and whether its ends are known.
+    fn burst(&self) -> (Range<usize>, bool) {
+        burst_around(&self.times, self.app.index, bursts::MAX_GAP_MS)
+    }
+
     /// Asks for the current shot first, then its neighbours, then the
-    /// full picture for the zoom, and forgets what is too far away.
+    /// full picture for the zoom, then the head of every other file, the
+    /// closest first, so that bursts take shape around the current shot.
     fn schedule(&mut self) {
         let index = self.app.index;
         if self.scheduled == Some(index) {
@@ -114,20 +143,21 @@ impl Viewer {
             self.full = None;
         }
 
-        let last = self.shots.len().saturating_sub(1);
-        let mut jobs = vec![Job::Info(index), Job::Preview(index)];
-        for distance in 1..=PRELOAD {
-            jobs.extend(
-                index
-                    .checked_add(distance)
-                    .filter(|&i| i <= last)
-                    .map(Job::Preview),
-            );
-            jobs.extend(index.checked_sub(distance).map(Job::Preview));
-        }
+        let last = self.shots.len() - 1;
+        let neighbours = (1..=PRELOAD).flat_map(|distance| {
+            [
+                index.checked_add(distance).filter(|&i| i <= last),
+                index.checked_sub(distance),
+            ]
+        });
+        let mut jobs = vec![Job::Head(index), Job::Preview(index)];
+        jobs.extend(neighbours.flatten().map(Job::Preview));
         jobs.push(Job::Full(index));
+        let mut others: Vec<usize> = (0..self.shots.len()).filter(|&i| i != index).collect();
+        others.sort_by_key(|&i| i.abs_diff(index));
+        jobs.extend(others.into_iter().map(Job::Head));
         jobs.retain(|job| match *job {
-            Job::Info(i) => !self.infos.contains_key(&i),
+            Job::Head(i) => self.times[i] == Time::Unknown,
             Job::Preview(i) => !self.previews.contains_key(&i),
             Job::Full(i) => self.full.as_ref().is_none_or(|(full, _)| *full != i),
         });
@@ -137,8 +167,18 @@ impl Viewer {
     fn receive(&mut self) {
         while let Ok(loaded) = self.loaded.try_recv() {
             match loaded {
-                Loaded::Info { index, marks, exif } => {
-                    self.infos.insert(index, (marks, exif));
+                Loaded::Head {
+                    index,
+                    exif,
+                    thumbnail,
+                    marks,
+                } => {
+                    let taken = exif.as_ref().ok().and_then(|exif| exif.taken_ms);
+                    self.times[index] = taken.map_or(Time::Missing, Time::At);
+                    self.exifs.insert(index, exif);
+                    // Marks set meanwhile from the keyboard are more recent.
+                    self.marks.entry(index).or_insert(marks);
+                    self.thumbnails.insert(index, thumbnail);
                 }
                 Loaded::Picture {
                     job,
@@ -177,18 +217,21 @@ impl Viewer {
             KeyCode::Char('b') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Blue)),
             KeyCode::Char('p') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Purple)),
             KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
+            KeyCode::Char('k') => return self.keep_in_burst(),
             KeyCode::Char('q') => Command::Quit,
             KeyCode::Esc if zoomed => Command::ToggleZoom,
             KeyCode::Esc => Command::Quit,
             KeyCode::Char('z') | KeyCode::Enter => Command::ToggleZoom,
-            KeyCode::Left | KeyCode::Char('h') if zoomed => Command::Pan { dx: -1, dy: 0 },
-            KeyCode::Right | KeyCode::Char('l') if zoomed => Command::Pan { dx: 1, dy: 0 },
-            KeyCode::Up | KeyCode::Char('k') if zoomed => Command::Pan { dx: 0, dy: -1 },
-            KeyCode::Down | KeyCode::Char('j') if zoomed => Command::Pan { dx: 0, dy: 1 },
+            KeyCode::Left if zoomed => Command::Pan { dx: -1, dy: 0 },
+            KeyCode::Right if zoomed => Command::Pan { dx: 1, dy: 0 },
+            KeyCode::Up if zoomed => Command::Pan { dx: 0, dy: -1 },
+            KeyCode::Down if zoomed => Command::Pan { dx: 0, dy: 1 },
             KeyCode::Right | KeyCode::Char('l' | ' ') | KeyCode::PageDown => Command::Next,
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace | KeyCode::PageUp => {
                 Command::Previous
             }
+            KeyCode::Down | KeyCode::Char(']') => Command::GoTo(self.next_burst()),
+            KeyCode::Up | KeyCode::Char('[') => Command::GoTo(self.previous_burst()),
             KeyCode::Home => Command::First,
             KeyCode::End => Command::Last,
             _ => return,
@@ -203,35 +246,106 @@ impl Viewer {
         self.app.apply(command, full_size, self.view);
     }
 
+    /// The first shot after the current burst, or the last shot.
+    fn next_burst(&self) -> usize {
+        self.burst().0.end.min(self.shots.len() - 1)
+    }
+
+    /// The first shot of the current burst if the current shot is not, else
+    /// the first shot of the previous burst.
+    fn previous_burst(&self) -> usize {
+        let start = self.burst().0.start;
+        if self.app.index > start || start == 0 {
+            start
+        } else {
+            burst_around(&self.times, start - 1, bursts::MAX_GAP_MS)
+                .0
+                .start
+        }
+    }
+
+    /// Writes marks for some shots, keeping the ones shown up to date.
+    fn write_marks(&mut self, changes: &[(usize, Marks)]) -> Result<(), String> {
+        let config = self
+            .config
+            .as_ref()
+            .map_err(|err| format!("cannot write marks: {err}"))?;
+        for &(index, marks) in changes {
+            config
+                .write_marks(&self.shots[index], &marks)
+                .map_err(|err| format!("cannot write marks: {err}"))?;
+            self.marks.insert(index, Ok(marks));
+        }
+        Ok(())
+    }
+
+    /// The marks of a shot, read now if not known yet.
+    fn current_marks(&self, index: usize) -> Result<Marks, String> {
+        match self.marks.get(&index) {
+            Some(marks) => marks.clone(),
+            None => rawtherapee::read_marks(&self.shots[index]).map_err(|err| err.to_string()),
+        }
+    }
+
     /// Changes the marks of the current shot and writes them right away.
     fn mark(&mut self, change: MarkChange) {
         let index = self.app.index;
-        let shot = &self.shots[index];
-        let result = match &self.config {
-            Err(err) => Err(format!("cannot write marks: {err}")),
-            Ok(config) => rawtherapee::read_marks(shot)
-                .and_then(|marks| {
-                    let marks = change.apply(marks);
-                    config.write_marks(shot, &marks).map(|()| marks)
-                })
-                .map_err(|err| format!("cannot write marks: {err}")),
-        };
-        self.message = Some(match result {
-            Ok(marks) => {
-                let saved = format!("{} saved", describe(&marks));
-                match self.infos.get_mut(&index) {
-                    Some(info) => info.0 = Ok(marks),
-                    None => self.scheduled = None,
-                }
-                Ok(saved)
-            }
-            Err(err) => Err(err),
-        });
+        let result = self
+            .current_marks(index)
+            .map(|marks| change.apply(marks))
+            .and_then(|marks| self.write_marks(&[(index, marks)]).map(|()| marks));
+        self.message = Some(result.map(|marks| format!("{} saved", describe(&marks))));
+    }
+
+    /// Keeps the current shot of its burst and rejects the others, then
+    /// moves to the next burst. The kept shot gets at least one star.
+    fn keep_in_burst(&mut self) {
+        let (burst, complete) = self.burst();
+        if !complete {
+            self.message = Some(Err(
+                "this burst is still being read, try again in a moment".to_owned()
+            ));
+            return;
+        }
+        let index = self.app.index;
+        let changes: Result<Vec<(usize, Marks)>, String> = burst
+            .clone()
+            .map(|i| {
+                let marks = self.current_marks(i)?;
+                Ok((
+                    i,
+                    if i == index {
+                        Marks {
+                            rank: marks.rank.max(1),
+                            in_trash: false,
+                            ..marks
+                        }
+                    } else {
+                        Marks {
+                            in_trash: true,
+                            ..marks
+                        }
+                    },
+                ))
+            })
+            .collect();
+        let result = changes.and_then(|changes| self.write_marks(&changes));
+        self.message = Some(result.map(|()| {
+            format!(
+                "kept {}, rejected the {} other shots of the burst",
+                self.shots[index].stem.to_string_lossy(),
+                burst.len() - 1
+            )
+        }));
+        if burst.end < self.shots.len() {
+            self.app.apply(Command::GoTo(burst.end), None, self.view);
+        }
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        let [image_area, status_area, info_area, help_area] = Layout::vertical([
+        let [image_area, strip_area, status_area, info_area, help_area] = Layout::vertical([
             Constraint::Min(1),
+            Constraint::Length(THUMB_ROWS + 1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -242,6 +356,26 @@ impl Viewer {
             u32::from(image_area.height) * u32::from(self.font.height),
         );
 
+        self.draw_picture(frame, image_area);
+        self.draw_strip(frame, strip_area);
+
+        frame.render_widget(
+            Paragraph::new(self.status_line()).style(Style::new().reversed()),
+            status_area,
+        );
+        frame.render_widget(Paragraph::new(self.info_line()), info_area);
+        let help = match &self.message {
+            Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
+            Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
+            None => Line::from(
+                " ←/→ shot · ↑/↓ burst · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · z zoom · q quit",
+            )
+            .fg(Color::DarkGray),
+        };
+        frame.render_widget(Paragraph::new(help), help_area);
+    }
+
+    fn draw_picture(&mut self, frame: &mut Frame, area: Rect) {
         let index = self.app.index;
         let wanted = match self.app.mode {
             Mode::Fit => self.previews.get(&index).map(|p| (p.clone(), None)),
@@ -260,7 +394,7 @@ impl Viewer {
                 let request = Request {
                     picture,
                     crop,
-                    area: Size::new(image_area.width, image_area.height),
+                    area: Size::new(area.width, area.height),
                 };
                 if self.requested.as_ref() != Some(&request) {
                     self.encoder.request(request.clone());
@@ -271,35 +405,81 @@ impl Viewer {
         };
 
         match (&self.shown, message) {
-            (_, Some(message)) => {
-                frame.render_widget(Paragraph::new(message).centered(), image_area)
-            }
+            (_, Some(message)) => frame.render_widget(Paragraph::new(message).centered(), area),
             (Some(shown), None) if Some(&shown.request) == self.requested.as_ref() => {
                 match &shown.protocol {
-                    Ok(protocol) => frame
-                        .render_widget(Image::new(protocol), centered(image_area, protocol.size())),
-                    Err(err) => {
-                        frame.render_widget(Paragraph::new(err.as_str()).centered(), image_area)
+                    Ok(protocol) => {
+                        frame.render_widget(Image::new(protocol), centered(area, protocol.size()))
                     }
+                    Err(err) => frame.render_widget(Paragraph::new(err.as_str()).centered(), area),
                 }
             }
-            _ => frame.render_widget(Paragraph::new("drawing…").centered(), image_area),
+            _ => frame.render_widget(Paragraph::new("drawing…").centered(), area),
+        }
+    }
+
+    /// The thumbnails of the current burst, centred on the current shot,
+    /// each with its marks below.
+    fn draw_strip(&mut self, frame: &mut Frame, area: Rect) {
+        let (burst, complete) = self.burst();
+        let index = self.app.index;
+        let slot_width = self.thumbnail_size.width + 1;
+        let visible = usize::from((area.width / slot_width).max(1));
+        let first = if burst.len() <= visible {
+            burst.start
+        } else {
+            index
+                .saturating_sub(visible / 2)
+                .clamp(burst.start, burst.end - visible)
+        };
+
+        for (slot, i) in (first..burst.end.min(first + visible)).enumerate() {
+            let x = area.x + u16::try_from(slot).unwrap_or(0) * slot_width;
+            let picture_area = Rect::new(x, area.y, self.thumbnail_size.width, THUMB_ROWS);
+            let label_area = Rect::new(x, area.y + THUMB_ROWS, self.thumbnail_size.width, 1);
+
+            if !self.thumbnail_protocols.contains_key(&i)
+                && let Some(Some(thumbnail)) = self.thumbnails.get(&i)
+                && let Ok(protocol) = self.picker.new_protocol(
+                    thumbnail.clone(),
+                    self.thumbnail_size,
+                    Resize::Fit(None),
+                )
+            {
+                self.thumbnail_protocols.insert(i, protocol);
+            }
+            match self.thumbnail_protocols.get(&i) {
+                Some(protocol) => frame.render_widget(
+                    Image::new(protocol),
+                    centered(picture_area, protocol.size()),
+                ),
+                None => frame.render_widget(Paragraph::new("·").centered(), picture_area),
+            }
+
+            let (label, rejected) = match self.marks.get(&i) {
+                Some(Ok(marks)) => (short_marks(marks), marks.in_trash),
+                Some(Err(_)) => ("?".to_owned(), false),
+                None => (String::new(), false),
+            };
+            let mut style = Style::new();
+            if rejected {
+                style = style.fg(Color::Red);
+            }
+            if i == index {
+                style = style.reversed();
+            }
+            frame.render_widget(Paragraph::new(label).centered().style(style), label_area);
         }
 
-        frame.render_widget(
-            Paragraph::new(self.status_line()).style(Style::new().reversed()),
-            status_area,
-        );
-        frame.render_widget(Paragraph::new(self.info_line()), info_area);
-        let help = match &self.message {
-            Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
-            Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
-            None => Line::from(
-                " ←/→ browse · 1-5 0 rank · r y g b p color · x reject · z zoom 100% · q quit",
-            )
-            .fg(Color::DarkGray),
-        };
-        frame.render_widget(Paragraph::new(help), help_area);
+        if !complete {
+            let more = Rect::new(
+                area.right().saturating_sub(1),
+                area.y + THUMB_ROWS / 2,
+                1,
+                1,
+            );
+            frame.render_widget(Paragraph::new("…"), more);
+        }
     }
 
     fn status_line(&self) -> String {
@@ -312,11 +492,18 @@ impl Viewer {
             .map(|ext| ext.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("+");
-        let marks = match self.infos.get(&index) {
-            Some((Ok(marks), _)) => describe(marks),
-            Some((Err(_), _)) => "marks: unreadable sidecar".to_owned(),
+        let marks = match self.marks.get(&index) {
+            Some(Ok(marks)) => describe(marks),
+            Some(Err(_)) => "marks: unreadable sidecar".to_owned(),
             None => String::new(),
         };
+        let (burst, complete) = self.burst();
+        let burst = format!(
+            "burst {}/{}{}",
+            index - burst.start + 1,
+            burst.len(),
+            if complete { "" } else { "+" }
+        );
         let (picture, job) = match self.app.mode {
             Mode::Fit => (self.previews.get(&index), Job::Preview(index)),
             Mode::Zoom { .. } => (self.full.as_ref().map(|(_, p)| p), Job::Full(index)),
@@ -333,8 +520,18 @@ impl Viewer {
             Mode::Fit => "fit",
             Mode::Zoom { .. } => "100%",
         };
+        let read = self
+            .times
+            .iter()
+            .filter(|&&time| time != Time::Unknown)
+            .count();
+        let reading = if read < self.shots.len() {
+            format!(" · reading {read}/{}", self.shots.len())
+        } else {
+            String::new()
+        };
         format!(
-            " {}/{}  {}  {files}  {marks}  {zoom} {origin}  decode {} · draw {} · {}",
+            " {}/{}  {}  {files}  {marks}  {burst}  {zoom} {origin}  decode {} · draw {} · {}{reading}",
             index + 1,
             self.shots.len(),
             shot.stem.to_string_lossy(),
@@ -345,8 +542,8 @@ impl Viewer {
     }
 
     fn info_line(&self) -> Line<'static> {
-        match self.infos.get(&self.app.index) {
-            Some((_, Ok(exif))) => {
+        match self.exifs.get(&self.app.index) {
+            Some(Ok(exif)) => {
                 let parts = [
                     exif.taken.clone(),
                     exif.camera.clone(),
@@ -358,7 +555,7 @@ impl Viewer {
                     parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")
                 ))
             }
-            Some((_, Err(err))) => Line::from(format!(" exif: {err}")).fg(Color::Red),
+            Some(Err(err)) => Line::from(format!(" exif: {err}")).fg(Color::Red),
             None => Line::default(),
         }
     }
@@ -368,6 +565,25 @@ fn describe(marks: &Marks) -> String {
     let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((pp3::MAX_RANK - marks.rank).into());
     let trash = if marks.in_trash { " rejected" } else { "" };
     format!("{stars} {:?}{trash}", marks.color)
+}
+
+/// Marks in a few characters, for a thumbnail: `★3 G ✗`.
+fn short_marks(marks: &Marks) -> String {
+    let rank = (marks.rank > 0).then(|| format!("★{}", marks.rank));
+    let color = match marks.color {
+        ColorLabel::None => None,
+        ColorLabel::Red => Some("R"),
+        ColorLabel::Yellow => Some("Y"),
+        ColorLabel::Green => Some("G"),
+        ColorLabel::Blue => Some("B"),
+        ColorLabel::Purple => Some("P"),
+    };
+    let trash = marks.in_trash.then_some("✗");
+    [rank.as_deref(), color, trash]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The rating a key sets: digits, or the keys under them on an AZERTY
@@ -456,5 +672,17 @@ mod tests {
         }
         assert_eq!(rank_key('6'), None);
         assert_eq!(rank_key('a'), None);
+    }
+
+    #[test]
+    fn short_marks_fit_under_a_thumbnail() {
+        let marks = |rank, color, in_trash| Marks {
+            rank,
+            color,
+            in_trash,
+        };
+        assert_eq!(short_marks(&marks(3, ColorLabel::Green, true)), "★3 G ✗");
+        assert_eq!(short_marks(&marks(0, ColorLabel::None, false)), "");
+        assert_eq!(short_marks(&marks(0, ColorLabel::Red, false)), "R");
     }
 }

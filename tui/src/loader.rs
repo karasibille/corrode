@@ -15,20 +15,23 @@ use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
 use corrode_core::pp3::Marks;
 use corrode_core::rawtherapee;
+use image::DynamicImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Job {
-    /// Marks and shooting information.
-    Info(usize),
+    /// What the head of the files tells: shooting information, including
+    /// the time used to find bursts, thumbnail and marks.
+    Head(usize),
     Preview(usize),
     Full(usize),
 }
 
 pub enum Loaded {
-    Info {
+    Head {
         index: usize,
-        marks: Result<Marks, String>,
         exif: Result<Exif, String>,
+        thumbnail: Option<DynamicImage>,
+        marks: Result<Marks, String>,
     },
     Picture {
         job: Job,
@@ -117,10 +120,11 @@ fn run(shots: &[Shot], job: Job) -> Loaded {
         }
     };
     match job {
-        Job::Info(index) => Loaded::Info {
+        Job::Head(index) => Loaded::Head {
             index,
-            marks: rawtherapee::read_marks(&shots[index]).map_err(|err| err.to_string()),
             exif: exif::read(&shots[index]).map_err(|err| err.to_string()),
+            thumbnail: picture::thumbnail(&shots[index]),
+            marks: rawtherapee::read_marks(&shots[index]).map_err(|err| err.to_string()),
         },
         Job::Preview(index) => picture(index, picture::preview),
         Job::Full(index) => picture(index, picture::full),
