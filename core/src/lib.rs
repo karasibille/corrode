@@ -7,3 +7,4 @@ pub mod pairing;
 pub mod picture;
 pub mod pp3;
 pub mod rawtherapee;
+pub mod sharpness;
