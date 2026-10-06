@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
+use image::metadata::Orientation;
 use rawler::decoders::RawDecodeParams;
 use rawler::formats::tiff::reader::TiffReader;
 use rawler::formats::tiff::{GenericTiffReader, IFD, Rational};
@@ -36,6 +37,9 @@ pub struct Exif {
     pub focal_length: Option<f32>,
     pub camera: Option<String>,
     pub lens: Option<String>,
+    /// Where the camera focused, as fractions of the width and height of
+    /// the upright picture; only Panasonic cameras are read for now.
+    pub focus_point: Option<(f32, f32)>,
 }
 
 impl Exif {
@@ -139,7 +143,8 @@ fn read_raw(path: &Path) -> Result<Exif, Error> {
         rawler::get_decoder(source)?.raw_metadata(source, &RawDecodeParams::default())
     };
     // The head is enough for the formats tried; others may point further.
-    let metadata = match metadata(&RawSource::new_from_slice(&head(path)?)) {
+    let head = head(path)?;
+    let metadata = match metadata(&RawSource::new_from_slice(&head)) {
         Ok(metadata) => metadata,
         Err(_) => {
             let source = RawSource::new(path).map_err(|err: io::Error| error(err.into()))?;
@@ -153,13 +158,38 @@ fn read_raw(path: &Path) -> Result<Exif, Error> {
         .lens
         .map(|lens| format!("{} {}", lens.lens_make, lens.lens_model))
         .or_else(|| metadata.exif.lens_model.clone());
+    // The maker notes are in the EXIF data of the embedded preview.
+    let orientation = metadata.exif.orientation.unwrap_or(1);
+    exif.focus_point = jpeg::rw2_preview(&head)
+        .and_then(jpeg::exif)
+        .and_then(jpeg::panasonic_af_point)
+        .map(|point| upright_point(point, orientation));
     Ok(exif)
 }
 
 fn read_jpeg(path: &Path) -> Result<Exif, Error> {
-    Ok(jpeg::exif(&head(path)?)
-        .and_then(parse_tiff)
-        .unwrap_or_default())
+    let head = head(path)?;
+    let Some(tiff) = jpeg::exif(&head) else {
+        return Ok(Exif::default());
+    };
+    let mut exif = parse_tiff(tiff).unwrap_or_default();
+    let orientation = Orientation::from_exif_chunk(tiff).map_or(1, |o| u16::from(o.to_exif()));
+    exif.focus_point =
+        jpeg::panasonic_af_point(tiff).map(|point| upright_point(point, orientation));
+    Ok(exif)
+}
+
+/// Turns an autofocus point recorded in the sensor's frame into the frame
+/// of the upright picture. Established on photos of a Panasonic GX9 with
+/// a plain subject: for shots held vertically, the point turns the other
+/// way from the picture, as if seen from the back of the sensor.
+fn upright_point((x, y): (f32, f32), orientation: u16) -> (f32, f32) {
+    match orientation {
+        3 => (1.0 - x, 1.0 - y),
+        6 => (y, 1.0 - x),
+        8 => (1.0 - y, x),
+        _ => (x, y),
+    }
 }
 
 /// Parses EXIF data stored as a TIFF structure, as in a JPEG's APP1 segment.
@@ -208,6 +238,7 @@ fn from_rawler(exif: &rawler::exif::Exif) -> Exif {
         focal_length: exif.focal_length.as_ref().and_then(ratio),
         camera: None,
         lens: exif.lens_model.clone(),
+        focus_point: None,
     }
 }
 
@@ -261,6 +292,29 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn focus_points_follow_the_picture_upright() {
+        let point = (0.35, 0.56);
+        assert_eq!(upright_point(point, 1), (0.35, 0.56));
+        assert_eq!(upright_point(point, 3), (0.65, 1.0 - 0.56));
+        assert_eq!(upright_point(point, 6), (0.56, 0.65));
+        assert_eq!(upright_point(point, 8), (1.0 - 0.56, 0.35));
+    }
+
+    #[test]
+    fn reads_the_focus_point_of_a_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("P1011261.JPG");
+        let exif = jpeg::tests::exif_with_af_point((128, 256), (64, 256));
+        fs::write(&path, jpeg::tests::encode(16, 8, Some(exif))).unwrap();
+        let shot = Shot {
+            stem: "P1011261".into(),
+            jpeg: Some(path),
+            raw: None,
+        };
+        assert_eq!(read(&shot).unwrap().focus_point, Some((0.5, 0.25)));
+    }
 
     #[test]
     fn timestamps_count_milliseconds_across_days_and_years() {
@@ -431,6 +485,7 @@ mod tests {
                 focal_length: Some(27.0),
                 camera: Some("Panasonic DC-GX9".into()),
                 lens: None,
+                focus_point: None,
             }
         );
     }

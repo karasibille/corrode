@@ -107,6 +107,27 @@ pub fn rw2_preview_range(head: &[u8]) -> Option<Range<usize>> {
     Some(start..start.checked_add(count)?)
 }
 
+/// The autofocus point a Panasonic camera records in its maker notes,
+/// as fractions of the width and height of the sensor. EXIF data as
+/// returned by [`exif`].
+pub fn panasonic_af_point(exif: &[u8]) -> Option<(f32, f32)> {
+    let tiff = Tiff::new(exif)?;
+    let exif_ifd = tiff.entry(tiff.u32(4)?, 0x8769)?; // Exif IFD pointer
+    let maker_notes = tiff.entry(exif_ifd, 0x927c)?; // MakerNote
+    // "Panasonic\0\0\0", then a directory whose offsets are relative to
+    // the TIFF header, like the rest of the EXIF data.
+    if exif.get(maker_notes..maker_notes + 12)? != b"Panasonic\0\0\0" {
+        return None;
+    }
+    let point = tiff.entry(maker_notes + 12, 0x004d)?; // AFPointPosition, 2 RATIONAL
+    let fraction = |at: usize| {
+        let (numerator, denominator) = (tiff.u32(at)?, tiff.u32(at + 4)?);
+        (denominator != 0).then(|| numerator as f32 / denominator as f32)
+    };
+    let (x, y) = (fraction(point)?, fraction(point + 8)?);
+    ((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)).then_some((x, y))
+}
+
 /// A TIFF structure, little- or big-endian, or a Panasonic RW2 file,
 /// which is a little-endian TIFF with another magic number.
 struct Tiff<'a> {
@@ -319,6 +340,59 @@ pub(crate) mod tests {
         // Only RW2 files: a plain TIFF with the same tag is not one.
         rw2[2] = b'*';
         assert_eq!(rw2_preview(&rw2), None);
+    }
+
+    /// Little-endian EXIF data with Panasonic maker notes holding an
+    /// autofocus point.
+    pub(crate) fn exif_with_af_point(x: (u32, u32), y: (u32, u32)) -> Vec<u8> {
+        fn entry(tag: u16, kind: u16, count: u32, value: u32) -> Vec<u8> {
+            [
+                &tag.to_le_bytes()[..],
+                &kind.to_le_bytes(),
+                &count.to_le_bytes(),
+                &value.to_le_bytes(),
+            ]
+            .concat()
+        }
+        // Header (8), IFD0 at 8 with the Exif pointer (2 + 12 + 4 = 18),
+        // Exif IFD at 26 with the maker notes (18), maker notes at 44:
+        // "Panasonic\0\0\0" (12) then a directory at 56 with the AF point
+        // (18), whose two rationals are at 74.
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend(8u32.to_le_bytes());
+        tiff.extend(1u16.to_le_bytes());
+        tiff.extend(entry(0x8769, 4, 1, 26));
+        tiff.extend(0u32.to_le_bytes());
+        tiff.extend(1u16.to_le_bytes());
+        tiff.extend(entry(0x927c, 7, 46, 44));
+        tiff.extend(0u32.to_le_bytes());
+        tiff.extend(b"Panasonic\0\0\0");
+        tiff.extend(1u16.to_le_bytes());
+        tiff.extend(entry(0x004d, 5, 2, 74));
+        tiff.extend(0u32.to_le_bytes());
+        assert_eq!(tiff.len(), 74);
+        for value in [x.0, x.1, y.0, y.1] {
+            tiff.extend(value.to_le_bytes());
+        }
+        tiff
+    }
+
+    #[test]
+    fn finds_the_panasonic_af_point() {
+        let exif = exif_with_af_point((90, 256), (143, 256));
+        assert_eq!(
+            panasonic_af_point(&exif),
+            Some((90.0 / 256.0, 143.0 / 256.0))
+        );
+        // Not Panasonic maker notes, or a point outside the frame.
+        let mut other = exif.clone();
+        other[44..53].copy_from_slice(b"Olympus\0\0");
+        assert_eq!(panasonic_af_point(&other), None);
+        assert_eq!(
+            panasonic_af_point(&exif_with_af_point((300, 256), (1, 2))),
+            None
+        );
+        assert_eq!(panasonic_af_point(&exif_orientation(6)), None);
     }
 
     #[test]
