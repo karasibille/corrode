@@ -5,6 +5,8 @@ use std::env;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
 
 use crate::pairing::{Kind, Shot};
 use crate::pp3::{self, Marks, Profile};
@@ -159,6 +161,29 @@ impl Config {
         };
         pp3::write_marks(&path, marks, &base).map_err(|source| Error::Pp3 { path, source })
     }
+}
+
+/// Opens a file in RawTherapee's editor, or a directory in its file
+/// browser, without waiting for it to close. Its output is discarded, so
+/// that it does not draw over a terminal interface.
+pub fn open(path: &Path) -> io::Result<()> {
+    let mut child = Command::new("rawtherapee")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // Collect its exit status when it closes, so that no zombie is left.
+    thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// The file of a shot to open in RawTherapee: its RAW, else its JPEG.
+pub fn file_to_open(shot: &Shot) -> &Path {
+    shot.raw
+        .as_deref()
+        .or(shot.jpeg.as_deref())
+        .expect("a shot has a JPEG or a RAW")
 }
 
 /// The sidecar holding a shot's marks, and the kind of image it belongs to.
@@ -396,6 +421,19 @@ mod tests {
             config.write_marks(&unmarked, &Marks::default()),
             Err(Error::DynamicProfile)
         ));
+    }
+
+    #[test]
+    fn the_raw_is_opened_rather_than_the_jpeg() {
+        let dir = Path::new("/photos");
+        assert_eq!(
+            file_to_open(&shot(dir, Some("P1011259.JPG"), Some("P1011259.RW2"))),
+            dir.join("P1011259.RW2")
+        );
+        assert_eq!(
+            file_to_open(&shot(dir, Some("P1011259.JPG"), None)),
+            dir.join("P1011259.JPG")
+        );
     }
 
     #[test]
