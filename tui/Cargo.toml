@@ -12,3 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 corrode-core.workspace = true
+image = { version = "0.25", default-features = false }
+ratatui = "0.30"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
