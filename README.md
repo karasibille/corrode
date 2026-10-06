@@ -2,7 +2,7 @@
 
 Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and glitch effects. Written in Rust.
 
-> Status: early development. The core library works and can be tried through its examples; there is no interface yet.
+> Status: early development. Culling works in the terminal; effects and bulk presets are still to come.
 
 ## Goals
 
@@ -19,6 +19,30 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 | `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` marks, picture decoding, EXIF; later effects |
 | `tui/` (`corrode-tui`) | Terminal interface (`ratatui` + `ratatui-image`), builds the `corrode` binary |
 
+## Culling
+
+```sh
+cargo run --release -p corrode-tui -- path/to/shoot
+```
+
+corrode shows the shots of a directory one at a time, with a strip of the burst the current one belongs to: shots taken less than 300 ms apart. Under each thumbnail are its marks, and ◆ points out the sharpest frame of the burst, measured around the camera's focus point. Marks are written to the RawTherapee sidecars as soon as they are set.
+
+| Key | Action |
+|---|---|
+| ← → (h l, space, page keys) | Previous / next shot |
+| ↑ ↓ ([ ]) | Previous / next burst |
+| s | Sharpest frame of the burst |
+| k | Keep the current shot, reject the rest of the burst, go to the next burst |
+| 1–5, 0 (or & é " ' ( à) | Rating, cleared by 0 |
+| r y g b p | Red, yellow, green, blue, purple label (again to clear) |
+| x, Delete | Reject / restore |
+| f | Filter: all, unsorted, kept, rejected |
+| z, Enter | 100% zoom; arrows then move around |
+| o / O | Open the shot / the directory in RawTherapee |
+| Esc, q | Leave the zoom / quit |
+
+Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute.
+
 ## Core library
 
 | Module | What it does |
@@ -26,9 +50,11 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 | `pairing` | Groups the JPEG and RAW files of a directory into shots, by base name |
 | `pp3` | Reads and writes the marks of a RawTherapee sidecar, keeping every other byte |
 | `rawtherapee` | Reads RawTherapee's settings, picks a shot's sidecar and creates it from the default profile |
-| `picture` | Decodes a shot upright: the preview embedded in the JPEG or the RAW, or the full image |
-| `jpeg` | Finds the EXIF data and the embedded preview in a JPEG without decoding it |
-| `exif` | Date, exposure, aperture, ISO, focal length, camera and lens of a shot |
+| `picture` | Decodes a shot upright: its thumbnail, the preview embedded in the JPEG or the RAW, or the full image |
+| `jpeg` | Finds the EXIF data, thumbnail, previews and focus point in a JPEG or RW2 without decoding it |
+| `exif` | Date to the millisecond, exposure, aperture, ISO, focal length, camera, lens and focus point |
+| `bursts` | Groups shots taken in quick succession |
+| `sharpness` | Scores the sharpness of a picture around its focus point |
 
 ### Trying it
 
@@ -39,6 +65,8 @@ cargo run -p corrode-core --example scan -- sandbox --list                 # how
 cargo run --release -p corrode-core --example info -- sandbox              # marks and shooting information
 cargo run -p corrode-core --example marks -- set --rank 4 sandbox/P1011259.JPG
 cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/*.JPG
+cargo run --release -p corrode-core --example bursts -- sandbox --list
+cargo run --release -p corrode-core --example sharpness -- sandbox
 ```
 
 `marks set` writes the RawTherapee sidecars of the shots it is given. `picture` saves the decoded pictures in the output directory. Use `--release` for decoding: it is much slower in debug builds.
