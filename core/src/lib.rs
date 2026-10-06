@@ -2,3 +2,4 @@
 
 pub mod pairing;
 pub mod pp3;
+pub mod rawtherapee;

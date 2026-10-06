@@ -107,8 +107,9 @@ pub fn sidecar_path(image: &Path) -> PathBuf {
 }
 
 /// A parsed `.pp3`, kept line by line (line endings included) so that
-/// writing it back reproduces the original bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// writing it back reproduces the original bytes. The default value is an
+/// empty profile, which RawTherapee reads as its neutral settings.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Profile {
     lines: Vec<String>,
 }
@@ -165,8 +166,8 @@ impl Profile {
         Profile::parse(&text)
     }
 
-    /// Iterates over the `(line index, key, value)` of the `[General]` entries.
-    fn general_entries(&self) -> impl Iterator<Item = (usize, &str, &str)> {
+    /// Iterates over the `(line index, key, value)` of the entries of a section.
+    fn entries<'a>(&'a self, wanted: &str) -> impl Iterator<Item = (usize, &'a str, &'a str)> {
         let mut section = "";
         self.lines
             .iter()
@@ -176,9 +177,21 @@ impl Profile {
                     section = name;
                     None
                 }
-                Line::Entry { key, value } if section == GENERAL => Some((index, key, value)),
+                Line::Entry { key, value } if section == wanted => Some((index, key, value)),
                 _ => None,
             })
+    }
+
+    fn general_entries(&self) -> impl Iterator<Item = (usize, &str, &str)> {
+        self.entries(GENERAL)
+    }
+
+    /// Value of a key, the last one winning if the key is repeated.
+    pub fn get(&self, section: &str, key: &str) -> Option<&str> {
+        self.entries(section)
+            .filter(|(_, k, _)| *k == key)
+            .map(|(_, _, value)| value)
+            .last()
     }
 
     /// The marks stored in the profile; missing keys get their default.
@@ -415,6 +428,15 @@ CA=true
             parse(text).marks().unwrap(),
             marks(4, ColorLabel::Green, true)
         );
+    }
+
+    #[test]
+    fn get_reads_a_key_of_any_section() {
+        let profile = parse("[Profiles]\nRawDefault=${G}/Auto\n[Other]\nRawDefault=no\n");
+        assert_eq!(profile.get("Profiles", "RawDefault"), Some("${G}/Auto"));
+        assert_eq!(profile.get("Profiles", "ImgDefault"), None);
+        assert_eq!(profile.get("Missing", "RawDefault"), None);
+        assert_eq!(parse("[A]\nk=1\nk=2\n").get("A", "k"), Some("2"));
     }
 
     #[test]
