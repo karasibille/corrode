@@ -3,7 +3,8 @@
 //! Cameras store the EXIF data in an APP1 segment and, in the Multi-Picture
 //! Format (CIPA DC-007), an index of extra images in an APP2 segment. A
 //! Panasonic GX9 appends a 1440×1080 preview this way, which decodes about
-//! nine times faster than the full 20 Mpx image.
+//! nine times faster than the full 20 Mpx image. The EXIF data itself holds
+//! a 160×120 thumbnail, within the first 64 KB of the file.
 
 /// Iterates over the `(marker, payload offset, payload)` of the segments
 /// before the image data. Stops at the first malformed segment.
@@ -54,13 +55,8 @@ pub fn mpf_preview(data: &[u8]) -> Option<&[u8]> {
     let base = offset + 4;
     let tiff = Tiff::new(&payload[4..])?;
 
-    let first_ifd = tiff.u32(4)?;
-    let entry_count = tiff.u16(first_ifd)?;
-    let (count, value) = (0..entry_count).find_map(|index| {
-        let entry = first_ifd + 2 + 12 * usize::from(index);
-        // Tag 0xb002, MP Entry: 16 bytes per image, the main one first.
-        (tiff.u16(entry)? == 0xb002).then(|| Some((tiff.u32(entry + 4)?, tiff.u32(entry + 8)?)))?
-    })?;
+    // Tag 0xb002, MP Entry: 16 bytes per image, the main one first.
+    let (count, value) = tiff.entry_with_count(tiff.u32(4)?, 0xb002)?;
 
     (1..count / 16)
         .filter_map(|index| {
@@ -73,20 +69,68 @@ pub fn mpf_preview(data: &[u8]) -> Option<&[u8]> {
         .max_by_key(|image| image.len())
 }
 
-/// A TIFF structure, little- or big-endian.
+/// The thumbnail referenced by EXIF data (a TIFF structure, as returned by
+/// [`exif`]): a small JPEG stored in the second image directory.
+pub fn exif_thumbnail(exif: &[u8]) -> Option<&[u8]> {
+    let tiff = Tiff::new(exif)?;
+    let thumbnail_ifd = tiff.next_ifd(tiff.u32(4)?)?;
+    let start = tiff.entry(thumbnail_ifd, 0x0201)?; // JPEGInterchangeFormat
+    let length = tiff.entry(thumbnail_ifd, 0x0202)?; // JPEGInterchangeFormatLength
+    let image = exif.get(start..start.checked_add(length)?)?;
+    image.starts_with(&[0xff, 0xd8]).then_some(image)
+}
+
+/// The JPEG preview embedded in a Panasonic RW2 file, as far as `data`
+/// goes: reading the head of the file is enough for its EXIF data.
+pub fn rw2_preview(data: &[u8]) -> Option<&[u8]> {
+    let tiff = Tiff::new(data).filter(|tiff| tiff.panasonic)?;
+    let ifd = tiff.u32(4)?;
+    let (count, start) = tiff.entry_with_count(ifd, 0x002e)?; // JpgFromRaw
+    let end = start.checked_add(count)?.min(data.len());
+    let image = data.get(start..end)?;
+    image.starts_with(&[0xff, 0xd8]).then_some(image)
+}
+
+/// A TIFF structure, little- or big-endian, or a Panasonic RW2 file,
+/// which is a little-endian TIFF with another magic number.
 struct Tiff<'a> {
     data: &'a [u8],
     big_endian: bool,
+    panasonic: bool,
 }
 
 impl<'a> Tiff<'a> {
     fn new(data: &'a [u8]) -> Option<Tiff<'a>> {
-        let big_endian = match data.get(..4)? {
-            b"II*\0" => false,
-            b"MM\0*" => true,
+        let (big_endian, panasonic) = match data.get(..4)? {
+            b"II*\0" => (false, false),
+            b"MM\0*" => (true, false),
+            b"IIU\0" => (false, true),
             _ => return None,
         };
-        Some(Tiff { data, big_endian })
+        Some(Tiff {
+            data,
+            big_endian,
+            panasonic,
+        })
+    }
+
+    /// The `(count, value or offset)` of a tag in the directory at `ifd`.
+    fn entry_with_count(&self, ifd: usize, tag: u16) -> Option<(usize, usize)> {
+        (0..self.u16(ifd)?).find_map(|index| {
+            let entry = ifd + 2 + 12 * usize::from(index);
+            (self.u16(entry)? == tag).then(|| Some((self.u32(entry + 4)?, self.u32(entry + 8)?)))?
+        })
+    }
+
+    /// The value of a single LONG tag, or the offset of a longer one.
+    fn entry(&self, ifd: usize, tag: u16) -> Option<usize> {
+        self.entry_with_count(ifd, tag).map(|(_, value)| value)
+    }
+
+    /// The directory following the one at `ifd`, if any.
+    fn next_ifd(&self, ifd: usize) -> Option<usize> {
+        let next = self.u32(ifd + 2 + 12 * usize::from(self.u16(ifd)?))?;
+        (next != 0).then_some(next)
     }
 
     fn u16(&self, at: usize) -> Option<u16> {
@@ -197,6 +241,60 @@ pub(crate) mod tests {
         // Offset pointing past the end, or not at the start of a JPEG.
         assert_eq!(mpf_preview(&with_mpf_preview(&main, &preview, 1000)), None);
         assert_eq!(mpf_preview(&with_mpf_preview(&main, &preview, 1)), None);
+    }
+
+    /// Little-endian EXIF data whose second directory points to a thumbnail
+    /// stored right after it.
+    pub(crate) fn exif_with_thumbnail(thumbnail: &[u8]) -> Vec<u8> {
+        // Header (8), empty first IFD at 8 (2 + 4), second IFD at 14 with
+        // two entries (2 + 24 + 4 = 30), thumbnail at 44.
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend(8u32.to_le_bytes());
+        tiff.extend(0u16.to_le_bytes());
+        tiff.extend(14u32.to_le_bytes());
+        tiff.extend(2u16.to_le_bytes());
+        for (tag, value) in [(0x0201u16, 44u32), (0x0202, thumbnail.len() as u32)] {
+            tiff.extend(tag.to_le_bytes());
+            tiff.extend(4u16.to_le_bytes()); // LONG
+            tiff.extend(1u32.to_le_bytes());
+            tiff.extend(value.to_le_bytes());
+        }
+        tiff.extend(0u32.to_le_bytes());
+        assert_eq!(tiff.len(), 44);
+        tiff.extend(thumbnail);
+        tiff
+    }
+
+    #[test]
+    fn finds_the_exif_thumbnail() {
+        let thumbnail = encode(16, 12, None);
+        let exif = exif_with_thumbnail(&thumbnail);
+        assert_eq!(exif_thumbnail(&exif), Some(&thumbnail[..]));
+        // Truncated data, or no second directory.
+        assert_eq!(exif_thumbnail(&exif[..exif.len() - 1]), None);
+        assert_eq!(exif_thumbnail(&exif_orientation(6)), None);
+    }
+
+    #[test]
+    fn finds_the_preview_of_a_rw2_head() {
+        let preview = encode(32, 24, None);
+        // RW2 header, IFD at 8 with the JpgFromRaw tag, preview at 26.
+        let mut rw2 = b"IIU\0".to_vec();
+        rw2.extend(8u32.to_le_bytes());
+        rw2.extend(1u16.to_le_bytes());
+        rw2.extend(0x002eu16.to_le_bytes());
+        rw2.extend(7u16.to_le_bytes()); // UNDEFINED
+        rw2.extend((preview.len() as u32).to_le_bytes());
+        rw2.extend(26u32.to_le_bytes());
+        rw2.extend(0u32.to_le_bytes());
+        rw2.extend(&preview);
+
+        assert_eq!(rw2_preview(&rw2), Some(&preview[..]));
+        // A head that stops inside the preview still gives its start.
+        assert_eq!(rw2_preview(&rw2[..40]), Some(&preview[..14]));
+        // Only RW2 files: a plain TIFF with the same tag is not one.
+        rw2[2] = b'*';
+        assert_eq!(rw2_preview(&rw2), None);
     }
 
     #[test]

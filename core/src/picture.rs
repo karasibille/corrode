@@ -18,8 +18,8 @@ use rawler::decoders::{Decoder, RawDecodeParams};
 use rawler::imgop::develop::RawDevelop;
 use rawler::rawsource::RawSource;
 
-use crate::jpeg;
 use crate::pairing::Shot;
+use crate::{exif, jpeg};
 
 /// Where a picture comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +89,43 @@ pub fn full(shot: &Shot) -> Result<Picture, Error> {
         Some(jpeg) => Jpeg::read(jpeg)?.full(),
         None => Raw::open(raw_of(shot))?.develop(),
     }
+}
+
+/// The thumbnail stored in the metadata of a shot (160×120 on a Panasonic
+/// GX9), turned upright: from the head of the JPEG, else of the RAW's
+/// embedded preview. Reading it costs little more than reading the date;
+/// `None` when the file has no thumbnail or it cannot be read.
+pub fn thumbnail(shot: &Shot) -> Option<DynamicImage> {
+    let (path, is_jpeg) = match (&shot.jpeg, &shot.raw) {
+        (Some(jpeg), _) => (jpeg, true),
+        (None, Some(raw)) => (raw, false),
+        (None, None) => return None,
+    };
+    let head = exif::read_head(path).ok()?;
+    let container = if is_jpeg {
+        &head[..]
+    } else {
+        jpeg::rw2_preview(&head)?
+    };
+    let exif = jpeg::exif(container)?;
+    let data = jpeg::exif_thumbnail(exif)?;
+    let mut image = image::load_from_memory_with_format(data, ImageFormat::Jpeg).ok()?;
+    let orientation = Orientation::from_exif_chunk(exif)
+        .filter(|_| is_jpeg)
+        .or_else(|| raw_orientation(&head))
+        .unwrap_or(Orientation::NoTransforms);
+    image.apply_orientation(orientation);
+    Some(image)
+}
+
+/// The orientation of a RAW file, from the head of the file.
+fn raw_orientation(head: &[u8]) -> Option<Orientation> {
+    let source = RawSource::new_from_slice(head);
+    let decoder = rawler::get_decoder(&source).ok()?;
+    let metadata = decoder
+        .raw_metadata(&source, &RawDecodeParams::default())
+        .ok()?;
+    Orientation::from_exif(u8::try_from(metadata.exif.orientation?).ok()?)
 }
 
 fn raw_of(shot: &Shot) -> &Path {
@@ -217,7 +254,7 @@ mod tests {
     use image::{ExtendedColorType, ImageEncoder, Rgb, RgbImage};
 
     use super::*;
-    use crate::jpeg::tests::{encode, exif_orientation, with_mpf_preview};
+    use crate::jpeg::tests::{encode, exif_orientation, exif_with_thumbnail, with_mpf_preview};
 
     fn shot(jpeg: Option<PathBuf>, raw: Option<PathBuf>) -> Shot {
         Shot {
@@ -266,6 +303,22 @@ mod tests {
         let broken = b"\xff\xd8 not a jpeg";
         fs::write(&path, with_mpf_preview(&main, broken, 0)).unwrap();
         assert_eq!(preview(&jpeg_only).unwrap().origin, Origin::Jpeg);
+    }
+
+    #[test]
+    fn the_thumbnail_comes_from_the_exif_data_of_the_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("P1011259.JPG");
+        let exif = exif_with_thumbnail(&encode(16, 12, None));
+        fs::write(&path, encode(64, 48, Some(exif))).unwrap();
+
+        let thumbnail = thumbnail(&shot(Some(path.clone()), None)).unwrap();
+        assert_eq!((thumbnail.width(), thumbnail.height()), (16, 12));
+
+        fs::write(&path, encode(64, 48, None)).unwrap();
+        assert!(super::thumbnail(&shot(Some(path), None)).is_none());
+        let missing = dir.path().join("missing.JPG");
+        assert!(super::thumbnail(&shot(Some(missing), None)).is_none());
     }
 
     #[test]

@@ -116,15 +116,18 @@ pub fn read(shot: &Shot) -> Result<Exif, Error> {
 /// 64 KB, a JPEG in a segment of at most 64 KB near the start.
 const HEAD: usize = 256 * 1024;
 
-fn head(path: &Path) -> Result<Vec<u8>, Error> {
+/// The first bytes of a file, where its metadata is.
+pub(crate) fn read_head(path: &Path) -> io::Result<Vec<u8>> {
     let mut data = Vec::with_capacity(HEAD);
-    File::open(path)
-        .and_then(|file| file.take(HEAD as u64).read_to_end(&mut data))
-        .map_err(|source| Error::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+    File::open(path)?.take(HEAD as u64).read_to_end(&mut data)?;
     Ok(data)
+}
+
+fn head(path: &Path) -> Result<Vec<u8>, Error> {
+    read_head(path).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 fn read_raw(path: &Path) -> Result<Exif, Error> {
