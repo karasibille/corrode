@@ -7,4 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+rawler = "0.8"
 tempfile = "3.27.0"
