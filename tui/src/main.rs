@@ -33,7 +33,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FontSize, Image, Resize};
 
-use app::{App, Command, MarkChange, Mode, Time, burst_around, zoom_crop};
+use app::{App, Command, Filter, MarkChange, Mode, Time, burst_around, next_matching, zoom_crop};
 use encoder::{Encoded, Encoder, Request};
 use loader::{Job, Loaded, Loader};
 
@@ -46,7 +46,9 @@ const KEEP: usize = 3;
 const THUMB_ROWS: u16 = 5;
 
 struct Viewer {
+    dir: PathBuf,
     shots: Arc<Vec<Shot>>,
+    filter: Filter,
     app: App,
     loader: Loader,
     loaded: Receiver<Loaded>,
@@ -79,7 +81,12 @@ struct Viewer {
 }
 
 impl Viewer {
-    fn new(shots: Vec<Shot>, picker: Picker, config: Result<Config, String>) -> Viewer {
+    fn new(
+        dir: PathBuf,
+        shots: Vec<Shot>,
+        picker: Picker,
+        config: Result<Config, String>,
+    ) -> Viewer {
         let shots = Arc::new(shots);
         let (loaded_tx, loaded) = mpsc::channel();
         let (encoded_tx, encoded) = mpsc::channel();
@@ -88,6 +95,8 @@ impl Viewer {
         let thumbnail_columns = (u32::from(THUMB_ROWS) * u32::from(font.height) * 4 / 3)
             .div_ceil(u32::from(font.width.max(1)));
         Viewer {
+            dir,
+            filter: Filter::All,
             app: App::new(shots.len()),
             loader: Loader::new(Arc::clone(&shots), thread_count(), loaded_tx),
             loaded,
@@ -230,6 +239,9 @@ impl Viewer {
             KeyCode::Char('p') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Purple)),
             KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
             KeyCode::Char('k') => return self.keep_in_burst(),
+            KeyCode::Char('f') => return self.next_filter(),
+            KeyCode::Char('o') => return self.open(false),
+            KeyCode::Char('O') => return self.open(true),
             KeyCode::Char('s') => match self.sharpest() {
                 Some(index) => Command::GoTo(index),
                 None => {
@@ -259,10 +271,85 @@ impl Viewer {
             self.mark(change);
             return;
         }
+        let Some(command) = self.filtered(command) else {
+            self.message = Some(Err(format!("no other {} shot", self.filter.name())));
+            return;
+        };
         let full_size = self
             .full_picture()
             .map(|p| (p.image.width(), p.image.height()));
         self.app.apply(command, full_size, self.view);
+    }
+
+    fn matches(&self, index: usize) -> bool {
+        let marks = self.marks.get(&index).and_then(|marks| marks.as_ref().ok());
+        self.filter.matches(marks)
+    }
+
+    /// The command that moves to a shot of the filter instead of any shot,
+    /// or `None` if there is no such shot in that direction.
+    fn filtered(&self, command: Command) -> Option<Command> {
+        if self.filter == Filter::All {
+            return Some(command);
+        }
+        let count = self.shots.len();
+        let index = self.app.index;
+        let matches = |i| self.matches(i);
+        let target = match command {
+            Command::Next => next_matching(index, true, count, matches),
+            Command::Previous => next_matching(index, false, count, matches),
+            Command::First => (0..count).find(|&i| matches(i)),
+            Command::Last => (0..count).rev().find(|&i| matches(i)),
+            // A burst jump lands on the first shot of the filter from there.
+            Command::GoTo(target) if target > index => (target..count).find(|&i| matches(i)),
+            Command::GoTo(target) if target < index => (target..index).find(|&i| matches(i)),
+            other => return Some(other),
+        };
+        target.map(Command::GoTo)
+    }
+
+    /// Moves to the next filter, and to a shot it shows if the current one
+    /// is not.
+    fn next_filter(&mut self) {
+        self.filter = self.filter.next();
+        let index = self.app.index;
+        let count = self.shots.len();
+        let target = if self.matches(index) {
+            Some(index)
+        } else {
+            next_matching(index, true, count, |i| self.matches(i))
+                .or_else(|| next_matching(index, false, count, |i| self.matches(i)))
+        };
+        let read = self.marks.len();
+        let shown = (0..count).filter(|&i| self.matches(i)).count();
+        self.message = Some(match target {
+            Some(target) => {
+                self.app.apply(Command::GoTo(target), None, self.view);
+                Ok(format!(
+                    "showing {} shots: {shown} of {read} read",
+                    self.filter.name()
+                ))
+            }
+            None => Err(format!(
+                "no {} shot among the {read} read",
+                self.filter.name()
+            )),
+        });
+    }
+
+    /// Opens the current shot in RawTherapee's editor, or the directory in
+    /// its file browser, which shows the marks and can filter by them.
+    fn open(&mut self, directory: bool) {
+        let path = if directory {
+            self.dir.clone()
+        } else {
+            rawtherapee::file_to_open(&self.shots[self.app.index]).to_owned()
+        };
+        self.message = Some(
+            rawtherapee::open(&path)
+                .map(|()| format!("opening {} in RawTherapee", path.display()))
+                .map_err(|err| format!("cannot start RawTherapee: {err}")),
+        );
     }
 
     /// The sharpest shot of the current burst, among those measured, if
@@ -404,7 +491,7 @@ impl Viewer {
             Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
             Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
             None => Line::from(
-                " ←/→ shot · ↑/↓ burst · s sharpest ◆ · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · z zoom · q quit",
+                " ←/→ shot · ↑/↓ burst · s sharpest ◆ · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · f filter · o/O RawTherapee · z zoom · q quit",
             )
             .fg(Color::DarkGray),
         };
@@ -580,8 +667,12 @@ impl Viewer {
         } else {
             String::new()
         };
+        let filter = match self.filter {
+            Filter::All => String::new(),
+            filter => format!("  [{}]", filter.name()),
+        };
         format!(
-            " {}/{}  {}  {files}  {marks}  {burst}{sharpness}  {zoom} {origin}  decode {} · draw {} · {}{reading}",
+            " {}/{}{filter}  {}  {files}  {marks}  {burst}{sharpness}  {zoom} {origin}  decode {} · draw {} · {}{reading}",
             index + 1,
             self.shots.len(),
             shot.stem.to_string_lossy(),
@@ -681,7 +772,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::load().map_err(|err| err.to_string());
     let mut terminal = ratatui::init();
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let mut viewer = Viewer::new(shots, picker, config);
+    let mut viewer = Viewer::new(dir, shots, picker, config);
 
     let result = (|| -> Result<(), Box<dyn Error>> {
         while !viewer.app.quit {

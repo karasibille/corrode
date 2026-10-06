@@ -129,6 +129,69 @@ impl App {
     }
 }
 
+/// Which shots browsing goes through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Filter {
+    #[default]
+    All,
+    /// Neither rated, labelled nor rejected.
+    Unsorted,
+    /// Rated or labelled, and not rejected.
+    Kept,
+    Rejected,
+}
+
+impl Filter {
+    /// The next filter, in the order the filter key goes through them.
+    pub fn next(self) -> Filter {
+        match self {
+            Filter::All => Filter::Unsorted,
+            Filter::Unsorted => Filter::Kept,
+            Filter::Kept => Filter::Rejected,
+            Filter::Rejected => Filter::All,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Filter::All => "all",
+            Filter::Unsorted => "unsorted",
+            Filter::Kept => "kept",
+            Filter::Rejected => "rejected",
+        }
+    }
+
+    /// Whether a shot with these marks is shown; marks not read yet only
+    /// match `All`.
+    pub fn matches(self, marks: Option<&Marks>) -> bool {
+        let Some(marks) = marks else {
+            return self == Filter::All;
+        };
+        let sorted = marks.rank > 0 || marks.color != ColorLabel::None;
+        match self {
+            Filter::All => true,
+            Filter::Unsorted => !marks.in_trash && !sorted,
+            Filter::Kept => !marks.in_trash && sorted,
+            Filter::Rejected => marks.in_trash,
+        }
+    }
+}
+
+/// The first shot after `from` (or before it, going backward) that
+/// matches, in `0..count`.
+pub fn next_matching(
+    from: usize,
+    forward: bool,
+    count: usize,
+    matches: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if forward {
+        (from.saturating_add(1)..count).find(|&i| matches(i))
+    } else {
+        (0..from.min(count)).rev().find(|&i| matches(i))
+    }
+}
+
 /// What is known of the time a shot was taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Time {
@@ -260,6 +323,50 @@ mod tests {
         assert_eq!(burst_around(&partly_read, 0, 300), (0..2, false));
         assert_eq!(burst_around(&partly_read, 3, 300), (3..4, false));
         assert_eq!(burst_around(&[Unknown], 0, 300), (0..1, true));
+    }
+
+    #[test]
+    fn filters_sort_shots_by_their_marks() {
+        let marks = |rank, color, in_trash| Marks {
+            rank,
+            color,
+            in_trash,
+        };
+        let unsorted = marks(0, ColorLabel::None, false);
+        let rated = marks(2, ColorLabel::None, false);
+        let labelled = marks(0, ColorLabel::Green, false);
+        let rejected = marks(3, ColorLabel::Red, true);
+        let cases = [
+            (Filter::All, [true, true, true, true, true]),
+            (Filter::Unsorted, [true, false, false, false, false]),
+            (Filter::Kept, [false, true, true, false, false]),
+            (Filter::Rejected, [false, false, false, true, false]),
+        ];
+        for (filter, expected) in cases {
+            let found = [
+                filter.matches(Some(&unsorted)),
+                filter.matches(Some(&rated)),
+                filter.matches(Some(&labelled)),
+                filter.matches(Some(&rejected)),
+                filter.matches(None),
+            ];
+            assert_eq!(found, expected, "{filter:?}");
+        }
+        let mut filter = Filter::All;
+        for _ in 0..4 {
+            filter = filter.next();
+        }
+        assert_eq!(filter, Filter::All);
+    }
+
+    #[test]
+    fn next_matching_skips_other_shots() {
+        let even = |i: usize| i.is_multiple_of(2);
+        assert_eq!(next_matching(0, true, 10, even), Some(2));
+        assert_eq!(next_matching(3, false, 10, even), Some(2));
+        assert_eq!(next_matching(8, true, 10, even), None);
+        assert_eq!(next_matching(0, false, 10, even), None);
+        assert_eq!(next_matching(20, false, 10, even), Some(8));
     }
 
     #[test]
