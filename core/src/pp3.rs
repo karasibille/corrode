@@ -18,48 +18,21 @@ const RANK: &str = "Rank";
 const COLOR_LABEL: &str = "ColorLabel";
 const IN_TRASH: &str = "InTrash";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    Io(io::Error),
+    #[error(transparent)]
+    Io(#[from] io::Error),
     /// The file is not text. Usually a corrupted file: it must not be
     /// overwritten, since it may still be recoverable.
+    #[error("not a text file, probably corrupted")]
     NotText,
     /// A line is neither a section header, a `key=value` pair, a comment
     /// nor blank (1-based line number).
-    Malformed {
-        line: usize,
-    },
+    #[error("malformed line {line}")]
+    Malformed { line: usize },
     /// A mark has a value RawTherapee would not write.
-    InvalidMark {
-        key: &'static str,
-        value: String,
-    },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io(err) => write!(f, "{err}"),
-            Error::NotText => write!(f, "not a text file, probably corrupted"),
-            Error::Malformed { line } => write!(f, "malformed line {line}"),
-            Error::InvalidMark { key, value } => write!(f, "invalid {key} value: {value:?}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Io(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::Io(err)
-    }
+    #[error("invalid {key} value: {value:?}")]
+    InvalidMark { key: &'static str, value: String },
 }
 
 /// Path of the sidecar of an image: the full file name plus `.pp3`.

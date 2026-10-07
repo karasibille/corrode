@@ -17,19 +17,6 @@ use std::time::Instant;
 use corrode_core::pairing::{self, Shot};
 use corrode_core::picture::{self, Picture};
 
-fn shot_of(image: &Path) -> Result<Shot, String> {
-    let dir = match image.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
-    let stem = image.file_stem().unwrap_or_default();
-    pairing::scan_dir(dir)
-        .map_err(|err| format!("{}: {err}", dir.display()))?
-        .into_iter()
-        .find(|shot| shot.stem == stem)
-        .ok_or_else(|| format!("{}: not a JPEG or RAW image", image.display()))
-}
-
 fn decode(
     shot: &Shot,
     kind: &str,
@@ -73,7 +60,10 @@ fn main() -> ExitCode {
     let mut ok = true;
     for image in &images {
         println!("{}", image.display());
-        let result = shot_of(image).and_then(|shot| {
+        let shot = pairing::shots_of(std::slice::from_ref(image))
+            .map_err(|err| err.to_string())
+            .map(|shots| shots.into_iter().next().expect("one image gives one shot"));
+        let result = shot.and_then(|shot| {
             decode(&shot, "preview", picture::preview, &out)?;
             decode(&shot, "full", picture::full, &out)
         });

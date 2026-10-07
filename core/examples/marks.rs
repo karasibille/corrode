@@ -11,7 +11,6 @@
 //! cargo run -p corrode-core --example marks -- set --trash /tmp/corrode-test/P1011260.JPG
 //! ```
 
-use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,39 +57,6 @@ fn parse_color(name: &str) -> Option<ColorLabel> {
     }
 }
 
-fn describe(marks: &Marks) -> String {
-    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((MAX_RANK - marks.rank).into());
-    let trash = if marks.in_trash { "  rejected" } else { "" };
-    format!("{stars}  {:?}{trash}", marks.color)
-}
-
-/// Finds the shot of each image by scanning its directory, so that the
-/// JPEG and the RAW of a pair are handled together.
-fn shots(images: &[PathBuf]) -> Result<Vec<Shot>, String> {
-    let mut by_dir: BTreeMap<PathBuf, Vec<Shot>> = BTreeMap::new();
-    let mut found = Vec::new();
-    for image in images {
-        let dir = match image.parent() {
-            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
-        if !by_dir.contains_key(&dir) {
-            let shots =
-                pairing::scan_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-            by_dir.insert(dir.clone(), shots);
-        }
-        let stem = image.file_stem().unwrap_or_default();
-        let shot = by_dir[&dir]
-            .iter()
-            .find(|shot| shot.stem == stem)
-            .ok_or_else(|| format!("{}: not a JPEG or RAW image", image.display()))?;
-        if !found.contains(shot) {
-            found.push(shot.clone());
-        }
-    }
-    Ok(found)
-}
-
 fn report(shot: &Shot, result: Result<Marks, rawtherapee::Error>) -> bool {
     let sidecar = rawtherapee::sidecar(shot).path;
     let shown = if sidecar.exists() {
@@ -100,7 +66,7 @@ fn report(shot: &Shot, result: Result<Marks, rawtherapee::Error>) -> bool {
     };
     match result {
         Ok(marks) => {
-            println!("{}  {}", describe(&marks), shown.display());
+            println!("{marks}  {}", shown.display());
             true
         }
         Err(err) => {
@@ -141,7 +107,7 @@ fn run(args: Vec<String>) -> Result<bool, String> {
     if images.is_empty() {
         return Err("no image given".to_owned());
     }
-    let shots = shots(&images)?;
+    let shots = pairing::shots_of(&images).map_err(|err| err.to_string())?;
 
     let mut ok = true;
     match command.as_str() {

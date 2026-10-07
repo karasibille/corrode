@@ -2,7 +2,6 @@
 //! profile it applies to a new image, and which sidecar holds a shot's marks.
 
 use std::env;
-use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,45 +20,27 @@ const NEUTRAL: &str = "Neutral";
 /// Rule-based profile selection, which corrode does not evaluate.
 const DYNAMIC: &str = "Dynamic";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// No `HOME` to locate RawTherapee's settings from.
+    #[error("cannot locate RawTherapee's settings: HOME is not set")]
     NoConfigDir,
     /// RawTherapee's options file could not be read or parsed.
+    #[error("{}: {source}", path.display())]
     Options { path: PathBuf, source: pp3::Error },
     /// A setting corrode needs is missing from the options file.
+    #[error("RawTherapee setting {0} is missing")]
     MissingSetting(&'static str),
     /// The default profile named in the options was not found.
+    #[error("default profile not found: {0}")]
     ProfileNotFound(String),
     /// The default profile is chosen by rules (`Dynamic`), which corrode
     /// cannot reproduce: creating a sidecar would risk the wrong rendering.
+    #[error("dynamic default profiles are not supported")]
     DynamicProfile,
     /// A sidecar or profile could not be read or written.
+    #[error("{}: {source}", path.display())]
     Pp3 { path: PathBuf, source: pp3::Error },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::NoConfigDir => {
-                write!(f, "cannot locate RawTherapee's settings: HOME is not set")
-            }
-            Error::Options { path, source } => write!(f, "{}: {source}", path.display()),
-            Error::MissingSetting(key) => write!(f, "RawTherapee setting {key} is missing"),
-            Error::ProfileNotFound(name) => write!(f, "default profile not found: {name}"),
-            Error::DynamicProfile => write!(f, "dynamic default profiles are not supported"),
-            Error::Pp3 { path, source } => write!(f, "{}: {source}", path.display()),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Options { source, .. } | Error::Pp3 { source, .. } => Some(source),
-            _ => None,
-        }
-    }
 }
 
 /// RawTherapee's settings directory: `$RT_SETTINGS`, else

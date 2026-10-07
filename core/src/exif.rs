@@ -77,34 +77,18 @@ impl fmt::Display for Exif {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{}: {source}", path.display())]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("{}: {source}", path.display())]
     Raw {
         path: PathBuf,
         source: rawler::RawlerError,
     },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            Error::Raw { path, source } => write!(f, "{}: {source}", path.display()),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Io { source, .. } => Some(source),
-            Error::Raw { source, .. } => Some(source),
-        }
-    }
 }
 
 /// Reads the shooting information of a shot, from its RAW if it has one,

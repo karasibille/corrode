@@ -9,7 +9,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use corrode_core::marks::{MAX_RANK, Marks};
 use corrode_core::pairing::{self, Shot};
 use corrode_core::{exif, rawtherapee};
 
@@ -21,12 +20,6 @@ fn files(shot: &Shot) -> String {
         .map(|ext| ext.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("+")
-}
-
-fn marks(marks: &Marks) -> String {
-    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((MAX_RANK - marks.rank).into());
-    let trash = if marks.in_trash { " rejected" } else { "" };
-    format!("{stars} {:?}{trash}", marks.color)
 }
 
 fn main() -> ExitCode {
@@ -46,7 +39,7 @@ fn main() -> ExitCode {
     for shot in &shots {
         println!("{}  {}", shot.stem.to_string_lossy(), files(shot));
         match rawtherapee::read_marks(shot) {
-            Ok(found) => println!("  marks   {}", marks(&found)),
+            Ok(found) => println!("  marks   {found}"),
             Err(err) => {
                 println!("  marks   error: {err}");
                 ok = false;

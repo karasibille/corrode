@@ -1,7 +1,7 @@
 //! Text for the terminal: lines that fit the width, marks in words or in
 //! a few characters, colors, and the keys that set a rating.
 
-use corrode_core::marks::{ColorLabel, MAX_RANK, Marks};
+use corrode_core::marks::{ColorLabel, Marks};
 use ratatui::layout::{Rect, Size};
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
@@ -85,12 +85,6 @@ pub fn label_color(label: ColorLabel) -> Color {
         ColorLabel::Blue => Color::Blue,
         ColorLabel::Purple => Color::Magenta,
     }
-}
-
-pub fn describe(marks: &Marks) -> String {
-    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((MAX_RANK - marks.rank).into());
-    let trash = if marks.in_trash { " rejected" } else { "" };
-    format!("{stars} {:?}{trash}", marks.color)
 }
 
 /// Marks in a few characters, for a thumbnail: `★3 G ✗`.

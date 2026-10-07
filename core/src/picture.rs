@@ -12,7 +12,6 @@
 //! tells where the preview lies. This matters on a spinning disk, where a
 //! whole RAW file takes a large part of a second to read.
 
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -46,34 +45,18 @@ pub struct Picture {
     pub origin: Origin,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{}: {source}", path.display())]
     Jpeg {
         path: PathBuf,
         source: image::ImageError,
     },
+    #[error("{}: {source}", path.display())]
     Raw {
         path: PathBuf,
         source: rawler::RawlerError,
     },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Jpeg { path, source } => write!(f, "{}: {source}", path.display()),
-            Error::Raw { path, source } => write!(f, "{}: {source}", path.display()),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Jpeg { source, .. } => Some(source),
-            Error::Raw { source, .. } => Some(source),
-        }
-    }
 }
 
 /// A picture to browse with: the JPEG's embedded preview, else the JPEG,

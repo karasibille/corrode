@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use super::Viewer;
 use crate::app::{Command, MarkChange, Mode, burst_around, next_matching};
 use crate::culling;
-use crate::text::{describe, rank_key};
+use crate::text::rank_key;
 use corrode_core::bursts;
 
 impl Viewer {
@@ -201,7 +201,7 @@ impl Viewer {
             .current_marks(index)
             .map(|marks| change.apply(marks))
             .and_then(|marks| self.write_marks(&[(index, marks)]).map(|()| marks));
-        self.message = Some(result.map(|marks| format!("{} saved", describe(&marks))));
+        self.message = Some(result.map(|marks| format!("{marks} saved")));
     }
 
     /// Keeps the current shot of its burst and rejects the others, then

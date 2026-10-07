@@ -108,6 +108,37 @@ pub fn scan_dir(dir: &Path) -> io::Result<Vec<Shot>> {
     Ok(pair(paths))
 }
 
+/// The shots the given image files belong to, each once, in the order
+/// given: each file's directory is scanned once. An image that is neither
+/// a JPEG nor a RAW gives an error.
+pub fn shots_of(images: &[PathBuf]) -> io::Result<Vec<Shot>> {
+    let mut scanned: BTreeMap<PathBuf, Vec<Shot>> = BTreeMap::new();
+    let mut found: Vec<Shot> = Vec::new();
+    for image in images {
+        let dir = match image.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        if !scanned.contains_key(&dir) {
+            scanned.insert(dir.clone(), scan_dir(&dir)?);
+        }
+        let stem = image.file_stem().unwrap_or_default();
+        let shot = scanned[&dir]
+            .iter()
+            .find(|shot| shot.stem == stem)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{}: not a JPEG or RAW image", image.display()),
+                )
+            })?;
+        if !found.contains(shot) {
+            found.push(shot.clone());
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +249,26 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn shots_of_finds_the_shot_of_each_image_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["A.JPG", "A.RW2", "B.RW2", "notes.txt"] {
+            fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let images: Vec<PathBuf> = ["A.RW2", "B.RW2", "A.JPG"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        let shots = shots_of(&images).unwrap();
+        let stems: Vec<_> = shots
+            .iter()
+            .map(|s| s.stem.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(stems, ["A", "B"]);
+        assert!(shots_of(&[dir.path().join("notes.txt")]).is_err());
+        assert!(shots_of(&[dir.path().join("missing/C.JPG")]).is_err());
     }
 
     #[test]

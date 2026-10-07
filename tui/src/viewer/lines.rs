@@ -1,7 +1,7 @@
 //! The lines around the picture: the shot on top, how it was taken, and
 //! the progress of culling at the bottom.
 
-use corrode_core::marks::{ColorLabel, MAX_RANK};
+use corrode_core::marks::ColorLabel;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 
@@ -25,9 +25,7 @@ impl Viewer {
         ];
         match self.states[index].marks.as_ref() {
             Some(Ok(marks)) => {
-                let stars =
-                    "★".repeat(marks.rank.into()) + &"☆".repeat((MAX_RANK - marks.rank).into());
-                parts.push((1, vec![Span::from(stars).fg(Color::Yellow)]));
+                parts.push((1, vec![Span::from(marks.stars()).fg(Color::Yellow)]));
                 if marks.color != ColorLabel::None {
                     let color = label_color(marks.color);
                     parts.push((
