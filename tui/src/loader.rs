@@ -2,15 +2,17 @@
 //!
 //! The application says which jobs it wants, most urgent first, every time
 //! the current shot changes; jobs no longer wanted are dropped before they
-//! start. Results come back through a channel.
+//! start. Results come back through a channel. A small cache shared by the
+//! threads keeps the last previews and the shooting information, so that a
+//! preview decoded to be shown is not decoded again to be assessed.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use corrode_core::exif::{self, Exif};
+use corrode_core::exif::{Exif, Head};
 use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
 use corrode_core::pp3::Marks;
@@ -55,6 +57,34 @@ struct Queue {
     closed: bool,
 }
 
+/// Previews kept for the assessment of a burst, and shooting information
+/// kept for the focus point.
+const CACHED_PREVIEWS: usize = 8;
+
+#[derive(Default)]
+struct Cache {
+    /// The last decoded previews, oldest first.
+    previews: VecDeque<(usize, Arc<Picture>)>,
+    exifs: HashMap<usize, Exif>,
+}
+
+impl Cache {
+    fn preview(&self, index: usize) -> Option<Arc<Picture>> {
+        self.previews
+            .iter()
+            .find(|(i, _)| *i == index)
+            .map(|(_, picture)| Arc::clone(picture))
+    }
+
+    fn keep_preview(&mut self, index: usize, picture: &Arc<Picture>) {
+        self.previews.retain(|(i, _)| *i != index);
+        if self.previews.len() >= CACHED_PREVIEWS {
+            self.previews.pop_front();
+        }
+        self.previews.push_back((index, Arc::clone(picture)));
+    }
+}
+
 pub struct Loader {
     queue: Arc<(Mutex<Queue>, Condvar)>,
 }
@@ -62,11 +92,13 @@ pub struct Loader {
 impl Loader {
     pub fn new(shots: Arc<Vec<Shot>>, threads: usize, results: Sender<Loaded>) -> Loader {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+        let cache = Arc::new(Mutex::new(Cache::default()));
         for _ in 0..threads {
             let (queue, shots, results) = (Arc::clone(&queue), Arc::clone(&shots), results.clone());
+            let cache = Arc::clone(&cache);
             thread::spawn(move || {
                 while let Some(job) = next_job(&queue) {
-                    let loaded = run(&shots, job);
+                    let loaded = run(&shots, &cache, job);
                     queue.0.lock().unwrap().running.remove(&job);
                     if results.send(loaded).is_err() {
                         break;
@@ -115,31 +147,61 @@ fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<Job> {
     }
 }
 
-fn run(shots: &[Shot], job: Job) -> Loaded {
+fn run(shots: &[Shot], cache: &Mutex<Cache>, job: Job) -> Loaded {
     let start = Instant::now();
-    let picture = |index: usize, decode: fn(&Shot) -> Result<Picture, picture::Error>| {
-        let picture = decode(&shots[index])
-            .map(Arc::new)
-            .map_err(|err| err.to_string());
-        Loaded::Picture {
-            job,
-            picture,
-            elapsed: start.elapsed(),
+    let shot = |index: usize| &shots[index];
+    // The preview of a shot, from the cache or decoded and cached.
+    let preview = |index: usize| -> Result<Arc<Picture>, String> {
+        if let Some(picture) = cache.lock().unwrap().preview(index) {
+            return Ok(picture);
         }
+        let picture = picture::preview(shot(index))
+            .map(Arc::new)
+            .map_err(|err| err.to_string())?;
+        cache.lock().unwrap().keep_preview(index, &picture);
+        Ok(picture)
+    };
+    let loaded = |job, picture| Loaded::Picture {
+        job,
+        picture,
+        elapsed: start.elapsed(),
     };
     match job {
-        Job::Head(index) => Loaded::Head {
-            index,
-            exif: exif::read(&shots[index]).map_err(|err| err.to_string()),
-            thumbnail: picture::thumbnail(&shots[index]),
-            marks: rawtherapee::read_marks(&shots[index]).map_err(|err| err.to_string()),
-        },
-        Job::Preview(index) => picture(index, picture::preview),
-        Job::Full(index) => picture(index, picture::full),
+        Job::Head(index) => {
+            let head = Head::read(shot(index));
+            let exif = head
+                .as_ref()
+                .map_err(|err| err.to_string())
+                .and_then(|head| head.exif().map_err(|err| err.to_string()));
+            if let Ok(exif) = &exif {
+                cache.lock().unwrap().exifs.insert(index, exif.clone());
+            }
+            let thumbnail = head
+                .ok()
+                .and_then(|head| head.thumbnail())
+                .or_else(|| picture::thumbnail(shot(index)));
+            Loaded::Head {
+                index,
+                exif,
+                thumbnail,
+                marks: rawtherapee::read_marks(shot(index)).map_err(|err| err.to_string()),
+            }
+        }
+        Job::Preview(index) => loaded(job, preview(index)),
+        Job::Full(index) => loaded(
+            job,
+            picture::full(shot(index))
+                .map(Arc::new)
+                .map_err(|err| err.to_string()),
+        ),
         Job::Assess(index) => {
-            let shot = &shots[index];
-            let focus = exif::read(shot).ok().and_then(|exif| exif.focus_point);
-            let assessment = picture::preview(shot).ok().map(|preview| Assessment {
+            let focus = match cache.lock().unwrap().exifs.get(&index) {
+                Some(exif) => exif.focus_point,
+                None => corrode_core::exif::read(shot(index))
+                    .ok()
+                    .and_then(|exif| exif.focus_point),
+            };
+            let assessment = preview(index).ok().map(|preview| Assessment {
                 sharpness: sharpness::score(&preview.image, focus),
                 banded: banding::analyze(&preview.image).is_some_and(|bands| bands.is_banded()),
             });

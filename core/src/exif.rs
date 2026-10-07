@@ -18,7 +18,7 @@ use rawler::rawsource::RawSource;
 use rawler::tags::TiffCommonTag;
 
 use crate::jpeg;
-use crate::pairing::Shot;
+use crate::pairing::{Kind, Shot};
 
 /// Shooting information; any of it may be missing from a file.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -109,11 +109,7 @@ impl std::error::Error for Error {
 /// Reads the shooting information of a shot, from its RAW if it has one,
 /// else from its JPEG. A file without EXIF data gives an empty `Exif`.
 pub fn read(shot: &Shot) -> Result<Exif, Error> {
-    match (&shot.raw, &shot.jpeg) {
-        (Some(raw), _) => read_raw(raw),
-        (None, Some(jpeg)) => read_jpeg(jpeg),
-        (None, None) => unreachable!("a shot has a JPEG or a RAW"),
-    }
+    Head::read(shot)?.exif()
 }
 
 /// How much of a file is read for its metadata: a RW2 has it in its first
@@ -127,14 +123,58 @@ pub(crate) fn read_head(path: &Path) -> io::Result<Vec<u8>> {
     Ok(data)
 }
 
-fn head(path: &Path) -> Result<Vec<u8>, Error> {
-    read_head(path).map_err(|source| Error::Io {
-        path: path.to_owned(),
-        source,
-    })
+/// The head of a shot's file, read once for everything it holds: the
+/// shooting information, and the thumbnail (see `picture`). The RAW is
+/// read when the shot has one, else the JPEG.
+pub struct Head {
+    path: PathBuf,
+    kind: Kind,
+    data: Vec<u8>,
 }
 
-fn read_raw(path: &Path) -> Result<Exif, Error> {
+impl Head {
+    pub fn read(shot: &Shot) -> Result<Head, Error> {
+        match (&shot.raw, &shot.jpeg) {
+            (Some(raw), _) => Head::of(raw, Kind::Raw),
+            (None, Some(jpeg)) => Head::of(jpeg, Kind::Jpeg),
+            (None, None) => unreachable!("a shot has a JPEG or a RAW"),
+        }
+    }
+
+    pub fn of(path: &Path, kind: Kind) -> Result<Head, Error> {
+        let data = read_head(path).map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        Ok(Head {
+            path: path.to_owned(),
+            kind,
+            data,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// The shooting information held by the head.
+    pub fn exif(&self) -> Result<Exif, Error> {
+        match self.kind {
+            Kind::Raw => read_raw(&self.path, &self.data),
+            Kind::Jpeg => Ok(read_jpeg(&self.data)),
+        }
+    }
+}
+
+fn read_raw(path: &Path, head: &[u8]) -> Result<Exif, Error> {
     let error = |source| Error::Raw {
         path: path.to_owned(),
         source,
@@ -143,8 +183,7 @@ fn read_raw(path: &Path) -> Result<Exif, Error> {
         rawler::get_decoder(source)?.raw_metadata(source, &RawDecodeParams::default())
     };
     // The head is enough for the formats tried; others may point further.
-    let head = head(path)?;
-    let metadata = match metadata(&RawSource::new_from_slice(&head)) {
+    let metadata = match metadata(&RawSource::new_from_slice(head)) {
         Ok(metadata) => metadata,
         Err(_) => {
             let source = RawSource::new(path).map_err(|err: io::Error| error(err.into()))?;
@@ -160,23 +199,22 @@ fn read_raw(path: &Path) -> Result<Exif, Error> {
         .or_else(|| metadata.exif.lens_model.clone());
     // The maker notes are in the EXIF data of the embedded preview.
     let orientation = metadata.exif.orientation.unwrap_or(1);
-    exif.focus_point = jpeg::rw2_preview(&head)
+    exif.focus_point = jpeg::rw2_preview(head)
         .and_then(jpeg::exif)
         .and_then(jpeg::panasonic_af_point)
         .map(|point| upright_point(point, orientation));
     Ok(exif)
 }
 
-fn read_jpeg(path: &Path) -> Result<Exif, Error> {
-    let head = head(path)?;
-    let Some(tiff) = jpeg::exif(&head) else {
-        return Ok(Exif::default());
+fn read_jpeg(head: &[u8]) -> Exif {
+    let Some(tiff) = jpeg::exif(head) else {
+        return Exif::default();
     };
     let mut exif = parse_tiff(tiff).unwrap_or_default();
     let orientation = Orientation::from_exif_chunk(tiff).map_or(1, |o| u16::from(o.to_exif()));
     exif.focus_point =
         jpeg::panasonic_af_point(tiff).map(|point| upright_point(point, orientation));
-    Ok(exif)
+    exif
 }
 
 /// Turns an autofocus point recorded in the sensor's frame into the frame

@@ -24,8 +24,9 @@ use rawler::decoders::{Decoder, RawDecodeParams};
 use rawler::imgop::develop::RawDevelop;
 use rawler::rawsource::RawSource;
 
-use crate::pairing::Shot;
-use crate::{exif, jpeg};
+use crate::exif::{self, Head};
+use crate::jpeg;
+use crate::pairing::{Kind, Shot};
 
 /// Where a picture comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,30 +102,38 @@ pub fn full(shot: &Shot) -> Result<Picture, Error> {
 }
 
 /// The thumbnail stored in the metadata of a shot (160×120 on a Panasonic
-/// GX9), turned upright: from the head of the JPEG, else of the RAW's
-/// embedded preview. Reading it costs little more than reading the date;
+/// GX9), turned upright: from the head of the RAW's embedded preview, else
+/// of the JPEG, the same file `exif::read` reads. Reading it costs little more than reading the date;
 /// `None` when the file has no thumbnail or it cannot be read.
 pub fn thumbnail(shot: &Shot) -> Option<DynamicImage> {
-    let (path, is_jpeg) = match (&shot.jpeg, &shot.raw) {
-        (Some(jpeg), _) => (jpeg, true),
-        (None, Some(raw)) => (raw, false),
-        (None, None) => return None,
-    };
-    let head = exif::read_head(path).ok()?;
-    let container = if is_jpeg {
-        &head[..]
-    } else {
-        jpeg::rw2_preview(&head)?
-    };
-    let exif = jpeg::exif(container)?;
-    let data = jpeg::exif_thumbnail(exif)?;
-    let mut image = image::load_from_memory_with_format(data, ImageFormat::Jpeg).ok()?;
-    let orientation = Orientation::from_exif_chunk(exif)
-        .filter(|_| is_jpeg)
-        .or_else(|| raw_orientation(&head))
-        .unwrap_or(Orientation::NoTransforms);
-    image.apply_orientation(orientation);
-    Some(image)
+    Head::read(shot).ok()?.thumbnail().or_else(|| {
+        // A RAW of another make than Panasonic has no readable thumbnail
+        // yet; the JPEG has one.
+        let jpeg = shot.jpeg.as_deref().filter(|_| shot.raw.is_some())?;
+        Head::of(jpeg, Kind::Jpeg).ok()?.thumbnail()
+    })
+}
+
+impl Head {
+    /// The thumbnail stored in the head's metadata, turned upright.
+    pub fn thumbnail(&self) -> Option<DynamicImage> {
+        let head = self.data();
+        let is_jpeg = self.kind() == Kind::Jpeg;
+        let container = if is_jpeg {
+            head
+        } else {
+            jpeg::rw2_preview(head)?
+        };
+        let exif = jpeg::exif(container)?;
+        let data = jpeg::exif_thumbnail(exif)?;
+        let mut image = image::load_from_memory_with_format(data, ImageFormat::Jpeg).ok()?;
+        let orientation = Orientation::from_exif_chunk(exif)
+            .filter(|_| is_jpeg)
+            .or_else(|| raw_orientation(head))
+            .unwrap_or(Orientation::NoTransforms);
+        image.apply_orientation(orientation);
+        Some(image)
+    }
 }
 
 /// The orientation of a RAW file, from the head of the file.
