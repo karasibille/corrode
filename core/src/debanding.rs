@@ -8,7 +8,10 @@
 //! because red, green and blue LEDs do not flicker alike, by folding the
 //! brightness of the rows over the period; rows are then divided by it.
 //! Colors without a clear periodic component are left alone, so that
-//! noise is not stamped into them.
+//! noise is not stamped into them. The bands are not the same everywhere:
+//! each lamp flickers with its own phase and lights its own part of the
+//! scene, so the gains are folded for each block of a grid over the
+//! picture and interpolated between blocks.
 //!
 //! The correction works on the raw mosaic, before demosaicing and the
 //! camera's tone curve, where light is still linear: a band is then a
@@ -16,6 +19,7 @@
 
 use std::f64::consts::PI;
 
+use image::DynamicImage;
 use rawler::rawimage::{RawImage, RawImageData};
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +38,15 @@ const MIN_PEAK: f64 = 20.0;
 /// to be corrected, once the picture is known to have some.
 const MIN_COLOR_PEAK: f64 = 20.0;
 /// Phase bins the period is folded into.
-const BINS: usize = 64;
+const BINS: usize = 32;
+/// Periods a block of the grid spans at least: enough rows for every bin
+/// to average out the noise.
+const BLOCK_PERIODS: f64 = 8.0;
+/// The largest gain a band can have: bands are a few percent, anything
+/// beyond is noise from a dark block.
+const MAX_GAIN: f64 = 1.25;
+/// The gamma of a camera's preview, near enough to take the bands off it.
+const PREVIEW_GAMMA: f32 = 2.2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -53,9 +65,9 @@ pub enum Error {
 pub struct Pattern {
     /// The period of the bands, in sensor rows.
     pub period: f64,
-    /// For each color, the gain over one period, in `BINS` steps; `None`
-    /// for a color without bands.
-    gains: [Option<Vec<f32>>; 4],
+    /// For each color, the gains over one period in each block of the
+    /// grid; `None` for a color without bands.
+    gains: [Option<Grid>; 4],
     /// For each color, how far its peak stood above its neighbours.
     pub peaks: [f64; 4],
     /// The same, measured again after the correction.
@@ -66,8 +78,14 @@ impl Pattern {
     /// The strength of the bands of a color: the largest deviation of its
     /// gain from 1, as a fraction. Zero for a color left alone.
     pub fn amplitude(&self, color: usize) -> f32 {
-        self.gains[color].as_ref().map_or(0.0, |gains| {
-            gains.iter().map(|g| (g - 1.0).abs()).fold(0.0, f32::max)
+        self.gains[color].as_ref().map_or(0.0, |grid| {
+            let mut amplitudes: Vec<f32> = grid
+                .blocks
+                .iter()
+                .map(|block| block.iter().map(|g| (g - 1.0).abs()).fold(0.0, f32::max))
+                .collect();
+            amplitudes.sort_by(|a, b| a.total_cmp(b));
+            amplitudes.get(amplitudes.len() / 2).copied().unwrap_or(0.0)
         })
     }
 
@@ -76,8 +94,76 @@ impl Pattern {
         self.gains.iter().all(Option::is_none)
     }
 
+    /// Takes the bands off a preview of the picture, which shows the
+    /// sensor `area` as `(left, top, width, height)` in the orientation of
+    /// the sensor: each channel of a pixel is divided by the gain of the
+    /// sensor rows it stands for, through the gamma of the preview. The
+    /// greens of the mosaic both stand for the green channel.
+    pub fn correct_preview(&self, preview: &mut DynamicImage, area: (usize, usize, usize, usize)) {
+        let (left, top, width, height) = area;
+        let mut rgb = preview.to_rgb8();
+        let (columns, rows) = (rgb.width() as usize, rgb.height() as usize);
+        if columns == 0 || rows == 0 || width == 0 || height == 0 {
+            return;
+        }
+        let channels = [
+            self.gains[0].as_ref(),
+            self.gains[1].as_ref(),
+            self.gains[2].as_ref(),
+        ];
+        for (py, row) in rgb.rows_mut().enumerate() {
+            // The sensor rows this preview row stands for.
+            let y0 = top + py * height / rows;
+            let y1 = (top + (py + 1) * height / rows).max(y0 + 1);
+            for (px, pixel) in row.enumerate() {
+                let x = left + px * width / columns;
+                for (channel, grid) in channels.iter().enumerate() {
+                    let Some(grid) = grid else {
+                        continue;
+                    };
+                    let gain = (y0..y1).map(|y| grid.gain(x, y, self.bin(y))).sum::<f32>()
+                        / (y1 - y0) as f32;
+                    let value = f32::from(pixel[channel]) / gain.powf(1.0 / PREVIEW_GAMMA);
+                    pixel[channel] = value.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        *preview = DynamicImage::ImageRgb8(rgb);
+    }
+
     fn bin(&self, row: usize) -> usize {
         ((row as f64 / self.period).fract() * BINS as f64) as usize % BINS
+    }
+}
+
+/// The gains of one color over one period, folded in each block of a
+/// grid over the picture: `STRIPS` columns of blocks, each at least
+/// `BLOCK_PERIODS` periods high.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Grid {
+    rows: usize,
+    block_width: usize,
+    block_height: usize,
+    /// Row-major, `BINS` gains per block.
+    blocks: Vec<Vec<f32>>,
+}
+
+impl Grid {
+    /// The gain at a pixel for the phase bin of its row, interpolated
+    /// between the centres of the four blocks around it.
+    fn gain(&self, x: usize, y: usize, bin: usize) -> f32 {
+        let position = |coordinate: usize, block: usize, count: usize| {
+            let centred = (coordinate as f32 + 0.5) / block as f32 - 0.5;
+            let clamped = centred.clamp(0.0, (count - 1) as f32);
+            let low = clamped.floor() as usize;
+            (low, (low + 1).min(count - 1), clamped - low as f32)
+        };
+        let (x0, x1, fx) = position(x, self.block_width, STRIPS);
+        let (y0, y1, fy) = position(y, self.block_height, self.rows);
+        let at = |bx: usize, by: usize| self.blocks[by * STRIPS + bx][bin];
+        let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+        let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+        top * (1.0 - fy) + bottom * fy
     }
 }
 
@@ -93,14 +179,13 @@ pub struct Mosaic<'a> {
 
 /// Column strips the mosaic is cut into: bands cross all of them, while
 /// a feature of the scene seldom does.
-const STRIPS: usize = 16;
+const STRIPS: usize = 32;
 
-/// The rows holding a color, as `(row, brightness)`, with the scene's slow
-/// changes removed: what remains is bands and noise. The brightness of a
-/// row is the median, over column strips, of the strip's mean brightness
-/// in log units, so that a feature of the scene in a few strips does not
-/// pass for a band.
-fn high_passed(mosaic: &Mosaic, color: usize) -> Vec<(usize, f64)> {
+/// For each of `strips` column strips, the rows holding a color as
+/// `(row, light, local)`: the mean light of the row above black, in
+/// sensor levels, and the light of the scene around it, its slow changes
+/// without the bands and the noise. `light / local` is the bands.
+fn strip_profiles(mosaic: &Mosaic, color: usize, strips: usize) -> Vec<Vec<(usize, f64, f64)>> {
     let Mosaic {
         width,
         height,
@@ -108,12 +193,11 @@ fn high_passed(mosaic: &Mosaic, color: usize) -> Vec<(usize, f64)> {
         black,
         color_at,
     } = mosaic;
-    let strip_width = width / STRIPS;
+    let strip_width = width / strips;
     if strip_width == 0 {
         return Vec::new();
     }
-    // Per strip, the log mean of the color's pixels of each row.
-    let mut profiles: Vec<Vec<(usize, f64)>> = vec![Vec::new(); STRIPS];
+    let mut profiles: Vec<Vec<(usize, f64, f64)>> = vec![Vec::new(); strips];
     for y in 0..*height {
         for (strip, profile) in profiles.iter_mut().enumerate() {
             let (mut sum, mut count) = (0f64, 0usize);
@@ -124,7 +208,8 @@ fn high_passed(mosaic: &Mosaic, color: usize) -> Vec<(usize, f64)> {
                 }
             }
             if count > 0 {
-                profile.push((y, (sum / count as f64).ln()));
+                let light = sum / count as f64;
+                profile.push((y, light.ln(), light));
             }
         }
     }
@@ -132,21 +217,37 @@ fn high_passed(mosaic: &Mosaic, color: usize) -> Vec<(usize, f64)> {
     if n == 0 || profiles.iter().any(|p| p.len() != n) {
         return Vec::new();
     }
-    let high_pass = |profile: &[(usize, f64)]| -> Vec<f64> {
-        (0..n)
-            .map(|i| {
-                let (a, b) = (i.saturating_sub(SMOOTHING), (i + SMOOTHING + 1).min(n));
-                let local = profile[a..b].iter().map(|r| r.1).sum::<f64>() / (b - a) as f64;
-                profile[i].1 - local
-            })
-            .collect()
+    profiles
+        .iter()
+        .map(|profile| {
+            (0..n)
+                .map(|i| {
+                    let (a, b) = (i.saturating_sub(SMOOTHING), (i + SMOOTHING + 1).min(n));
+                    let local = profile[a..b].iter().map(|r| r.1).sum::<f64>() / (b - a) as f64;
+                    (profile[i].0, profile[i].2, local.exp())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The rows holding a color, as `(row, brightness)`, with the scene's slow
+/// changes removed. The brightness of a row is the median over column
+/// strips, so that a feature of the scene in a few strips does not pass
+/// for a band.
+fn high_passed(mosaic: &Mosaic, color: usize) -> Vec<(usize, f64)> {
+    let profiles = strip_profiles(mosaic, color, STRIPS);
+    let Some(first) = profiles.first() else {
+        return Vec::new();
     };
-    let passed: Vec<Vec<f64>> = profiles.iter().map(|p| high_pass(p)).collect();
-    (0..n)
+    (0..first.len())
         .map(|i| {
-            let mut values: Vec<f64> = passed.iter().map(|strip| strip[i]).collect();
+            let mut values: Vec<f64> = profiles
+                .iter()
+                .map(|strip| (strip[i].1 / strip[i].2).ln())
+                .collect();
             values.sort_by(|a, b| a.total_cmp(b));
-            (profiles[0][i].0, values[values.len() / 2])
+            (first[i].0, values[values.len() / 2])
         })
         .collect()
 }
@@ -275,7 +376,10 @@ pub fn estimate(mosaic: &Mosaic) -> Result<Pattern, Error> {
     let period = refine(sharpest, period);
 
     let mut peaks = [0.0; 4];
-    let mut gains: [Option<Vec<f32>>; 4] = [None, None, None, None];
+    let mut gains: [Option<Grid>; 4] = [None, None, None, None];
+    let block_height = ((BLOCK_PERIODS * period).ceil() as usize).max(1);
+    let rows = (mosaic.height / block_height).max(1);
+    let block_width = (mosaic.width / STRIPS).max(1);
     for color in 0..4 {
         let signal = &signals[color];
         if signal.is_empty() {
@@ -289,22 +393,52 @@ pub fn estimate(mosaic: &Mosaic) -> Result<Pattern, Error> {
         if peak < MIN_COLOR_PEAK {
             continue;
         }
-        let (mut sum, mut count) = ([0f64; BINS], [0usize; BINS]);
-        for &(row, value) in signal {
-            let bin = ((row as f64 / period).fract() * BINS as f64) as usize % BINS;
-            sum[bin] += value;
-            count[bin] += 1;
+        // Fold each block's rows over the period: its own phase and
+        // amplitude of the bands. The gain of a bin is the light it got
+        // over the light the scene gives it, summed in linear units: in a
+        // dark block the noise then averages out instead of blowing up.
+        let fold = |profile: &[(usize, f64, f64)]| -> Vec<f32> {
+            let (mut light, mut local) = ([0f64; BINS], [0f64; BINS]);
+            for &(row, row_light, row_local) in profile {
+                let bin = ((row as f64 / period).fract() * BINS as f64) as usize % BINS;
+                light[bin] += row_light;
+                local[bin] += row_local;
+            }
+            (0..BINS)
+                .map(|bin| {
+                    if local[bin] > 0.0 {
+                        (light[bin] / local[bin]).clamp(1.0 / MAX_GAIN, MAX_GAIN) as f32
+                    } else {
+                        1.0
+                    }
+                })
+                .collect()
+        };
+        let strips = strip_profiles(mosaic, color, STRIPS);
+        let mut blocks = Vec::with_capacity(rows * STRIPS);
+        for by in 0..rows {
+            let top = by * block_height;
+            // The last row of blocks takes the rows left over.
+            let bottom = if by + 1 == rows {
+                mosaic.height
+            } else {
+                top + block_height
+            };
+            for strip in &strips {
+                let rows_in_block: Vec<(usize, f64, f64)> = strip
+                    .iter()
+                    .copied()
+                    .filter(|(row, _, _)| (top..bottom).contains(row))
+                    .collect();
+                blocks.push(fold(&rows_in_block));
+            }
         }
-        let gain: Vec<f32> = (0..BINS)
-            .map(|bin| {
-                if count[bin] > 0 {
-                    (sum[bin] / count[bin] as f64).exp() as f32
-                } else {
-                    1.0
-                }
-            })
-            .collect();
-        gains[color] = Some(gain);
+        gains[color] = Some(Grid {
+            rows,
+            block_width,
+            block_height,
+            blocks,
+        });
     }
     Ok(Pattern {
         period,
@@ -340,11 +474,12 @@ pub fn remove(
         let bin = pattern.bin(y);
         for x in 0..width {
             let color = color_at(y, x);
-            let Some(gains) = &pattern.gains[color] else {
+            let Some(grid) = &pattern.gains[color] else {
                 continue;
             };
+            let gain = grid.gain(x, y, bin);
             let value = &mut data[y * width + x];
-            let light = (f32::from(*value) - black[color]) / gains[bin];
+            let light = (f32::from(*value) - black[color]) / gain;
             *value = (light + black[color]).round().clamp(0.0, 65535.0) as u16;
         }
     }
@@ -357,9 +492,19 @@ pub fn output_path(raw: &std::path::Path) -> std::path::PathBuf {
     raw.with_file_name(format!("{stem}-deband.dng"))
 }
 
-/// Reads a RAW file, removes its bands and writes the result as a DNG.
+/// Reads a RAW file, removes its bands, from its preview too, and writes
+/// the result as a DNG.
 pub fn to_dng(raw: &std::path::Path, dng: &std::path::Path) -> Result<Pattern, Error> {
-    crate::dng::rewrite(raw, dng, deband)
+    crate::dng::rewrite(raw, dng, |raw, preview| {
+        let pattern = deband(raw)?;
+        // The preview shows the cropped area of the sensor.
+        let area = match raw.crop_area {
+            Some(crop) => (crop.p.x, crop.p.y, crop.d.w, crop.d.h),
+            None => (0, 0, raw.width, raw.height),
+        };
+        pattern.correct_preview(preview, area);
+        Ok(pattern)
+    })
 }
 
 /// Finds and removes the bands of a raw image, in place.
@@ -496,6 +641,50 @@ mod tests {
         let mean =
             |data: &[u16]| data.iter().map(|&v| f64::from(v)).sum::<f64>() / data.len() as f64;
         assert!((mean(&data) - mean(&reference)).abs() < 2.0);
+    }
+
+    #[test]
+    fn the_preview_loses_its_bands_too() {
+        use image::{Rgb, RgbImage};
+        let period = 40.0;
+        // One block of a gain over the whole picture: green only, as a
+        // sine over the period, in a preview three times smaller.
+        let bins: Vec<f32> = (0..BINS)
+            .map(|bin| 1.0 + 0.06 * (2.0 * PI * bin as f64 / BINS as f64).sin() as f32)
+            .collect();
+        let pattern = Pattern {
+            period,
+            gains: [
+                None,
+                Some(Grid {
+                    rows: 1,
+                    block_width: WIDTH / STRIPS,
+                    block_height: HEIGHT,
+                    blocks: vec![bins; STRIPS],
+                }),
+                None,
+                None,
+            ],
+            peaks: [0.0; 4],
+            residual: [0.0; 4],
+        };
+        let (columns, rows) = (WIDTH as u32 / 3, HEIGHT as u32 / 3);
+        let mut preview = DynamicImage::ImageRgb8(RgbImage::from_fn(columns, rows, |_, py| {
+            let gain = pattern.gains[1].as_ref().unwrap().gain(
+                0,
+                py as usize * 3 + 1,
+                pattern.bin(py as usize * 3 + 1),
+            );
+            let green = 150.0 * gain.powf(1.0 / PREVIEW_GAMMA);
+            Rgb([100, green.round() as u8, 50])
+        }));
+        pattern.correct_preview(&mut preview, (0, 0, WIDTH, HEIGHT));
+        let rgb = preview.to_rgb8();
+        for (_, _, pixel) in rgb.enumerate_pixels() {
+            assert_eq!(pixel[0], 100, "red left alone");
+            assert_eq!(pixel[2], 50, "blue left alone");
+            assert!(pixel[1].abs_diff(150) <= 1, "green {}", pixel[1]);
+        }
     }
 
     #[test]
