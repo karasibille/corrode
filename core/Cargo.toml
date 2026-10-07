@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+postcard = { version = "1", features = ["use-std"] }
 rawler = "0.8"
+serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2"

@@ -10,11 +10,12 @@ mod lines;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use corrode_core::bursts;
+use corrode_core::cache::Cache;
 use corrode_core::exif::Exif;
 use corrode_core::marks::Marks;
 use corrode_core::pairing::Shot;
@@ -68,6 +69,10 @@ pub struct Viewer {
     states: Vec<ShotState>,
     /// When each shot was taken, as far as read: bursts come from it.
     times: Vec<Time>,
+    /// What the files' heads told, kept between sessions.
+    cache: Arc<Mutex<Cache>>,
+    /// Whether the cache was saved since every shot was read.
+    cache_saved: bool,
     filter: Filter,
     pub app: App,
     loader: Loader,
@@ -108,6 +113,7 @@ impl Viewer {
         let shots = Arc::new(shots);
         let (loaded_tx, loaded) = mpsc::channel();
         let (encoded_tx, encoded) = mpsc::channel();
+        let cache = Arc::new(Mutex::new(Cache::open(&dir)));
         let font = picker.font_size();
         // Thumbnails are 4:3, the shape of the sensor.
         let thumbnail_columns = (u32::from(THUMB_ROWS) * u32::from(font.height) * 4 / 3)
@@ -118,7 +124,14 @@ impl Viewer {
             times: vec![Time::Unknown; shots.len()],
             filter: Filter::All,
             app: App::new(shots.len()),
-            loader: Loader::new(Arc::clone(&shots), thread_count(), loaded_tx),
+            loader: Loader::new(
+                Arc::clone(&shots),
+                thread_count(),
+                loaded_tx,
+                Arc::clone(&cache),
+            ),
+            cache,
+            cache_saved: false,
             loaded,
             font,
             protocol_name: format!("{:?}", picker.protocol_type()),
@@ -212,6 +225,13 @@ impl Viewer {
         self.loader.want(jobs);
     }
 
+    /// Saves what was read of the files for the next session. Errors are
+    /// ignored: the cache is only a shortcut.
+    pub fn save_cache(&mut self) {
+        let _ = self.cache.lock().unwrap().save();
+        self.cache_saved = true;
+    }
+
     /// Takes in what the background threads have loaded or encoded.
     pub fn receive(&mut self) {
         while let Ok(loaded) = self.loaded.try_recv() {
@@ -248,6 +268,9 @@ impl Viewer {
                     }
                 }
             }
+        }
+        if !self.cache_saved && self.times.iter().all(|time| *time != Time::Unknown) {
+            self.save_cache();
         }
         while let Ok(encoded) = self.encoded.try_recv() {
             // Ignore results for a request that was replaced meanwhile.

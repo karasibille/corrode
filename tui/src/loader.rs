@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use corrode_core::cache::Cache as MetaCache;
 use corrode_core::exif::{Exif, Head};
 use corrode_core::marks::Marks;
 use corrode_core::pairing::Shot;
@@ -90,15 +91,20 @@ pub struct Loader {
 }
 
 impl Loader {
-    pub fn new(shots: Arc<Vec<Shot>>, threads: usize, results: Sender<Loaded>) -> Loader {
+    pub fn new(
+        shots: Arc<Vec<Shot>>,
+        threads: usize,
+        results: Sender<Loaded>,
+        meta: Arc<Mutex<MetaCache>>,
+    ) -> Loader {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let cache = Arc::new(Mutex::new(Cache::default()));
         for _ in 0..threads {
             let (queue, shots, results) = (Arc::clone(&queue), Arc::clone(&shots), results.clone());
-            let cache = Arc::clone(&cache);
+            let (cache, meta) = (Arc::clone(&cache), Arc::clone(&meta));
             thread::spawn(move || {
                 while let Some(job) = next_job(&queue) {
-                    let loaded = run(&shots, &cache, job);
+                    let loaded = run(&shots, &cache, &meta, job);
                     queue.0.lock().unwrap().running.remove(&job);
                     if results.send(loaded).is_err() {
                         break;
@@ -147,7 +153,7 @@ fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<Job> {
     }
 }
 
-fn run(shots: &[Shot], cache: &Mutex<Cache>, job: Job) -> Loaded {
+fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) -> Loaded {
     let start = Instant::now();
     let shot = |index: usize| &shots[index];
     // The preview of a shot, from the cache or decoded and cached.
@@ -168,18 +174,31 @@ fn run(shots: &[Shot], cache: &Mutex<Cache>, job: Job) -> Loaded {
     };
     match job {
         Job::Head(index) => {
-            let head = Head::read(shot(index));
-            let exif = head
-                .as_ref()
-                .map_err(|err| err.to_string())
-                .and_then(|head| head.exif().map_err(|err| err.to_string()));
+            // The cache spares reading the file when it has not changed.
+            let cached = meta.lock().unwrap().get(shot(index));
+            let (exif, thumbnail) = match cached {
+                Some((exif, thumbnail)) => (Ok(exif), thumbnail),
+                None => {
+                    let head = Head::read(shot(index));
+                    let exif = head
+                        .as_ref()
+                        .map_err(|err| err.to_string())
+                        .and_then(|head| head.exif().map_err(|err| err.to_string()));
+                    let thumbnail = head
+                        .ok()
+                        .and_then(|head| head.thumbnail())
+                        .or_else(|| picture::thumbnail(shot(index)));
+                    if let Ok(exif) = &exif {
+                        meta.lock()
+                            .unwrap()
+                            .insert(shot(index), exif, thumbnail.as_ref());
+                    }
+                    (exif, thumbnail)
+                }
+            };
             if let Ok(exif) = &exif {
                 cache.lock().unwrap().exifs.insert(index, exif.clone());
             }
-            let thumbnail = head
-                .ok()
-                .and_then(|head| head.thumbnail())
-                .or_else(|| picture::thumbnail(shot(index)));
             Loaded::Head {
                 index,
                 exif,

@@ -2,6 +2,7 @@
 
 pub mod banding;
 pub mod bursts;
+pub mod cache;
 pub mod cameras;
 pub mod exif;
 mod files;

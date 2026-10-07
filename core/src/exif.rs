@@ -15,6 +15,7 @@ use rawler::formats::tiff::reader::TiffReader;
 use rawler::formats::tiff::{GenericTiffReader, IFD, Rational};
 use rawler::rawsource::RawSource;
 use rawler::tags::TiffCommonTag;
+use serde::{Deserialize, Serialize};
 
 use crate::cameras::panasonic;
 use crate::files::read_head;
@@ -22,7 +23,7 @@ use crate::formats::{jpeg, rw2};
 use crate::pairing::{Kind, Shot};
 
 /// Shooting information; any of it may be missing from a file.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Exif {
     /// Local date and time the photo was taken, as `2020-08-03 08:03:35`,
     /// which sorts chronologically as text.

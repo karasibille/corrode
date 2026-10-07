@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     })();
 
     ratatui::restore();
+    viewer.save_cache();
     println!("{}", viewer.summary());
     result
 }

@@ -43,7 +43,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | ? | Full help |
 | Esc, q | Leave the zoom / quit |
 
-There is nothing to save: marks are written as they are set. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute.
+There is nothing to save: marks are written as they are set. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute the first time. What the files told is kept in `~/.cache/corrode` (about 5 KB per shot), so that a directory seen before opens at once; an entry is dropped when its file changes.
 
 ## Core library
 
@@ -57,6 +57,7 @@ There is nothing to save: marks are written as they are set. The line above the 
 | `picture` | Decodes a shot upright: its thumbnail, the preview embedded in the JPEG or the RAW, or the full image |
 | `formats` | What a TIFF structure, a JPEG and a RW2 file hold and where, without decoding |
 | `cameras` | What is specific to a make: the Panasonic focus point and its orientation quirk |
+| `cache` | Keeps the shooting information and thumbnails between sessions, one file per directory |
 | `bursts` | Groups shots taken in quick succession |
 | `sharpness` | Scores the sharpness of a picture around its focus point |
 | `banding` | Detects the light bands LED lighting leaves with an electronic shutter |
