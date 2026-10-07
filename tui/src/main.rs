@@ -28,7 +28,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FontSize, Image, Resize};
@@ -80,6 +80,8 @@ struct Viewer {
     message: Option<Result<String, String>>,
     /// Whether the full help is shown instead of the shots.
     help: bool,
+    /// How many lines the help is scrolled down.
+    help_scroll: u16,
 }
 
 impl Viewer {
@@ -128,6 +130,7 @@ impl Viewer {
             config,
             message: None,
             help: false,
+            help_scroll: 0,
         }
     }
 
@@ -231,10 +234,18 @@ impl Viewer {
     fn key(&mut self, key: KeyEvent) {
         self.message = None;
         if self.help {
-            // Any key closes the help; q still quits.
-            self.help = false;
-            if key.code == KeyCode::Char('q') {
-                self.app.quit = true;
+            // Arrows scroll the help; any other key closes it, q still quits.
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.help_scroll = self.help_scroll.saturating_add(1)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                KeyCode::Char('q') => self.app.quit = true,
+                _ => self.help = false,
             }
             return;
         }
@@ -253,6 +264,7 @@ impl Viewer {
             KeyCode::Char('X') => return self.reject_burst(),
             KeyCode::Char('?') => {
                 self.help = true;
+                self.help_scroll = 0;
                 return;
             }
             KeyCode::Char('f') => return self.next_filter(),
@@ -564,7 +576,15 @@ impl Viewer {
 
     fn draw(&mut self, frame: &mut Frame) {
         if self.help {
-            frame.render_widget(Paragraph::new(self.help_text()), frame.area());
+            let area = frame.area();
+            let lines = self.help_text(area.width);
+            // Keep the end of the help on screen when scrolling down.
+            let last = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+            self.help_scroll = self.help_scroll.min(last.saturating_sub(area.height / 2));
+            let help = Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((self.help_scroll, 0));
+            frame.render_widget(help, area);
             return;
         }
         let [image_area, strip_area, status_area, info_area, help_area] = Layout::vertical([
@@ -584,97 +604,143 @@ impl Viewer {
         self.draw_strip(frame, strip_area);
 
         frame.render_widget(
-            Paragraph::new(self.status_line()).style(Style::new().reversed()),
+            Paragraph::new(self.status_line(status_area.width)).style(Style::new().reversed()),
             status_area,
         );
         frame.render_widget(Paragraph::new(self.info_line()), info_area);
         let help = match &self.message {
             Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
             Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
-            None => keys_line(&[
-                ("←→", "shot"),
-                ("↑↓", "burst"),
-                ("s", "sharpest"),
-                ("k", "keep, reject the rest"),
-                ("X", "reject burst"),
-                ("1-5", "rank"),
-                ("x", "reject"),
-                ("f", "filter"),
-                ("?", "help"),
-                ("q", "quit"),
-            ]),
+            None => keys_line(
+                &[
+                    ("←→", "shot"),
+                    ("↑↓", "burst"),
+                    ("k", "keep, reject the rest"),
+                    ("X", "reject burst"),
+                    ("s", "sharpest"),
+                    ("1-5", "rank"),
+                    ("x", "reject"),
+                    ("f", "filter"),
+                    ("q", "quit"),
+                    ("?", "help"),
+                ],
+                help_area.width,
+            ),
         };
         frame.render_widget(Paragraph::new(help), help_area);
     }
 
     /// The full help, with every key and what the marks mean.
-    fn help_text(&self) -> Vec<Line<'static>> {
-        let section = |title: &'static str| Line::from(title).bold().fg(Color::Yellow);
-        let key = |keys: &'static str, what: &'static str| {
-            Line::from(vec![
-                Span::from(format!("  {keys:<22}")).bold().fg(Color::Cyan),
-                Span::from(what),
-            ])
+    /// The full help, with every key and what the marks mean, laid out
+    /// for a terminal `width` columns wide; long lines wrap.
+    fn help_text(&self, width: u16) -> Vec<Line<'static>> {
+        // Below this width, keys go above their description.
+        let narrow = width < 64;
+        let mut lines = Vec::new();
+        let section = |lines: &mut Vec<Line<'static>>, title: &'static str| {
+            lines.push(Line::default());
+            lines.push(Line::from(format!(" {title}")).bold().fg(Color::Yellow));
         };
+        let key = |lines: &mut Vec<Line<'static>>, keys: &'static str, what: &'static str| {
+            let keys = Span::from(if narrow {
+                format!("  {keys}")
+            } else {
+                format!("  {keys:<18}")
+            })
+            .bold()
+            .fg(Color::Cyan);
+            if narrow {
+                lines.push(Line::from(keys));
+                lines.push(Line::from(format!("      {what}")));
+            } else {
+                lines.push(Line::from(vec![keys, Span::from(what)]));
+            }
+        };
+        let text = |lines: &mut Vec<Line<'static>>, text: &'static str| {
+            lines.push(Line::from(format!("    {text}")));
+        };
+
+        lines.push(Line::from(" ↑↓ scroll · any other key closes this help").italic());
+        section(&mut lines, "Browsing");
+        key(&mut lines, "← →  h l  space", "previous / next shot");
+        key(&mut lines, "↑ ↓  [ ]", "previous / next burst");
+        key(&mut lines, "Home End", "first / last shot");
+        key(
+            &mut lines,
+            "s",
+            "go to the sharpest shot of the burst without light bands (◆)",
+        );
+        key(
+            &mut lines,
+            "z  Enter",
+            "zoom to 100%, then arrows to move; again or Esc to leave",
+        );
+
+        section(
+            &mut lines,
+            "Marking, saved at once in RawTherapee's .pp3 sidecars",
+        );
+        key(
+            &mut lines,
+            "k",
+            "keep this shot (at least ★1), reject the rest of the burst, next burst",
+        );
+        key(&mut lines, "X", "reject the whole burst, next burst");
+        key(&mut lines, "1-5  & é \" ' (", "rating; 0 or à clears it");
+        key(
+            &mut lines,
+            "r y g b p",
+            "red, yellow, green, blue, purple label; again to clear",
+        );
+        key(&mut lines, "x  Delete", "reject / restore this shot");
+
+        section(&mut lines, "Filters");
+        key(
+            &mut lines,
+            "f",
+            "next filter: all → unsorted → kept → rejected → all",
+        );
+        text(
+            &mut lines,
+            "Browsing only goes through the shots of the filter; the strip still shows the whole burst.",
+        );
+        text(
+            &mut lines,
+            "unsorted: neither rated, labelled nor rejected, what is left to cull.",
+        );
+        text(&mut lines, "kept: rated or labelled, and not rejected.");
+        text(
+            &mut lines,
+            "rejected: to check that nothing good went there.",
+        );
+
+        section(&mut lines, "Under the thumbnails");
+        text(
+            &mut lines,
+            "★3 rating · R Y G B P label · ✗ rejected · ◆ sharpest · ≋ light bands",
+        );
+
+        section(&mut lines, "Done?");
+        text(
+            &mut lines,
+            "There is nothing to save: marks are written as you set them. The status line counts kept (✓), rejected (✗) and unsorted (?) shots; the unsorted filter shows what is left. q quits and prints a summary.",
+        );
+
+        section(&mut lines, "Other keys");
+        key(
+            &mut lines,
+            "o / O",
+            "open this shot / the directory in RawTherapee",
+        );
+        key(&mut lines, "q", "quit");
+
         let ms = |duration: Option<&Duration>| {
             duration.map_or("–".to_owned(), |d| format!("{} ms", d.as_millis()))
         };
-        let index = self.app.index;
-        let decode = self.timings.get(&Job::Preview(index));
+        let decode = self.timings.get(&Job::Preview(self.app.index));
         let draw = self.shown.as_ref().map(|shown| &shown.elapsed);
-        vec![
-            section(" Browsing"),
-            key("← →  h l  space", "previous / next shot"),
-            key("↑ ↓  [ ]", "previous / next burst"),
-            key("Home End", "first / last shot"),
-            key(
-                "s",
-                "go to the sharpest shot of the burst without light bands (◆)",
-            ),
-            key(
-                "z  Enter",
-                "zoom to 100%, then arrows to move; again or Esc to leave",
-            ),
-            Line::default(),
-            section(" Marking (saved at once in RawTherapee's .pp3 sidecars)"),
-            key(
-                "k",
-                "keep this shot (at least ★1), reject the rest of the burst, next burst",
-            ),
-            key("X", "reject the whole burst, next burst"),
-            key("1-5  & é \" ' (", "rating; 0 or à clears it"),
-            key(
-                "r y g b p",
-                "red, yellow, green, blue, purple label; again to clear",
-            ),
-            key("x  Delete", "reject / restore this shot"),
-            Line::default(),
-            section(" Filters"),
-            key("f", "next filter: all → unsorted → kept → rejected → all"),
-            Line::from("    Browsing only goes through the shots of the filter; the strip still"),
-            Line::from(
-                "    shows the whole burst. unsorted: neither rated, labelled nor rejected,",
-            ),
-            Line::from(
-                "    what is left to cull. kept: rated or labelled, not rejected. rejected:",
-            ),
-            Line::from("    to check nothing good went there."),
-            Line::default(),
-            section(" Under the thumbnails"),
-            Line::from("    ★3 rating · R Y G B P label · ✗ rejected · ◆ sharpest · ≋ light bands"),
-            Line::default(),
-            section(" Done?"),
-            Line::from(
-                "    There is nothing to save: marks are written as you set them. The status",
-            ),
-            Line::from(
-                "    line counts kept (✓), rejected (✗) and unsorted (?) shots; the unsorted",
-            ),
-            Line::from("    filter shows what is left. q quits and prints a summary."),
-            Line::default(),
-            key("o / O", "open this shot / the directory in RawTherapee"),
-            key("q", "quit"),
-            Line::default(),
+        lines.push(Line::default());
+        lines.push(
             Line::from(format!(
                 "  {} graphics · last preview decoded in {} · drawn in {}",
                 self.protocol_name,
@@ -682,9 +748,8 @@ impl Viewer {
                 ms(draw)
             ))
             .fg(Color::Gray),
-            Line::default(),
-            Line::from("  Any key closes this help.").italic(),
-        ]
+        );
+        lines
     }
 
     fn draw_picture(&mut self, frame: &mut Frame, area: Rect) {
@@ -801,7 +866,9 @@ impl Viewer {
         }
     }
 
-    fn status_line(&self) -> String {
+    /// The status line, as much of it as fits in `width` columns: the
+    /// least useful parts go first on a narrow terminal.
+    fn status_line(&self, width: u16) -> String {
         let index = self.app.index;
         let shot = &self.shots[index];
         let files = [&shot.jpeg, &shot.raw]
@@ -813,7 +880,7 @@ impl Viewer {
             .join("+");
         let marks = match self.marks.get(&index) {
             Some(Ok(marks)) => describe(marks),
-            Some(Err(_)) => "marks: unreadable sidecar".to_owned(),
+            Some(Err(_)) => "unreadable sidecar".to_owned(),
             None => String::new(),
         };
         let (burst, complete) = self.burst();
@@ -827,22 +894,24 @@ impl Viewer {
             .sharpest()
             .and_then(|best| self.assessment(best))
             .map(|best| best.sharpness);
-        let mut sharpness = match (self.assessment(index), best) {
+        let sharpness = match (self.assessment(index), best) {
             (Some(current), Some(best)) if best > 0.0 => {
-                format!("  sharpness {:.0}%", 100.0 * current.sharpness / best)
+                format!("sharpness {:.0}%", 100.0 * current.sharpness / best)
             }
             _ => String::new(),
         };
-        if self.assessment(index).is_some_and(|a| a.banded) {
-            sharpness.push_str("  ≋ light bands");
-        }
+        let bands = if self.assessment(index).is_some_and(|a| a.banded) {
+            "≋ light bands"
+        } else {
+            ""
+        };
         let zoom = match self.app.mode {
             Mode::Fit => "",
-            Mode::Zoom { .. } => "  100%",
+            Mode::Zoom { .. } => "100%",
         };
         let progress = self.progress();
         let done = if progress.unread == 0 && progress.unsorted == 0 {
-            "  all sorted"
+            "all sorted"
         } else {
             ""
         };
@@ -852,23 +921,36 @@ impl Viewer {
             .filter(|&&time| time != Time::Unknown)
             .count();
         let reading = if read < self.shots.len() {
-            format!(" · reading {read}/{}", self.shots.len())
+            format!("reading {read}/{}", self.shots.len())
         } else {
             String::new()
         };
         let filter = match self.filter {
             Filter::All => String::new(),
-            filter => format!("  [{}]", filter.name()),
+            filter => format!("[{}]", filter.name()),
         };
-        format!(
-            " {}/{}{filter}  {}  {files}  {marks}  {burst}{sharpness}{zoom}  │  ✓{} ✗{} ?{}{done}{reading}",
-            index + 1,
-            self.shots.len(),
-            shot.stem.to_string_lossy(),
-            progress.kept,
-            progress.rejected,
-            progress.unsorted,
-        )
+        // (priority, text): 1 is kept the longest.
+        let parts = [
+            (1, format!("{}/{}", index + 1, self.shots.len())),
+            (1, filter),
+            (2, shot.stem.to_string_lossy().into_owned()),
+            (5, files),
+            (2, marks),
+            (3, burst),
+            (3, sharpness),
+            (2, bands.to_owned()),
+            (1, zoom.to_owned()),
+            (
+                1,
+                format!(
+                    "│ ✓{} ✗{} ?{}",
+                    progress.kept, progress.rejected, progress.unsorted
+                ),
+            ),
+            (1, done.to_owned()),
+            (4, reading),
+        ];
+        fit(&parts, usize::from(width))
     }
 
     fn info_line(&self) -> Line<'static> {
@@ -901,14 +983,59 @@ struct Progress {
     unread: usize,
 }
 
-/// A line of keys and what they do, the keys standing out.
-fn keys_line(keys: &[(&'static str, &'static str)]) -> Line<'static> {
+/// A line of keys and what they do, the keys standing out: as many as
+/// fit in `width` columns, in order, the last one always shown.
+fn keys_line(keys: &[(&'static str, &'static str)], width: u16) -> Line<'static> {
+    let entry = |(key, what): &(&'static str, &'static str)| {
+        [
+            Span::from(*key).bold().fg(Color::Cyan),
+            Span::from(format!(" {what}   ")),
+        ]
+    };
+    let width = usize::from(width);
+    let Some((last, others)) = keys.split_last() else {
+        return Line::default();
+    };
+    let last = entry(last);
+    let mut used = 1 + last.iter().map(Span::width).sum::<usize>();
     let mut spans = vec![Span::from(" ")];
-    for (key, what) in keys {
-        spans.push(Span::from(*key).bold().fg(Color::Cyan));
-        spans.push(Span::from(format!(" {what}   ")));
+    for key in others {
+        let spans_of_key = entry(key);
+        let needed: usize = spans_of_key.iter().map(Span::width).sum();
+        if used + needed > width {
+            break;
+        }
+        used += needed;
+        spans.extend(spans_of_key);
     }
+    spans.extend(last);
     Line::from(spans)
+}
+
+/// Joins the non-empty parts with two spaces, dropping the least important
+/// ones (highest priority number, last first) until the text fits in
+/// `width` columns.
+fn fit(parts: &[(u8, String)], width: usize) -> String {
+    let mut kept: Vec<&(u8, String)> = parts.iter().filter(|(_, text)| !text.is_empty()).collect();
+    let join = |kept: &[&(u8, String)]| {
+        let texts: Vec<&str> = kept.iter().map(|(_, text)| text.as_str()).collect();
+        format!(" {}", texts.join("  "))
+    };
+    while Span::from(join(&kept)).width() > width {
+        let Some(least) = kept
+            .iter()
+            .enumerate()
+            .max_by_key(|&(position, (priority, _))| (*priority, position))
+            .map(|(position, _)| position)
+        else {
+            break;
+        };
+        if kept[least].0 == 1 {
+            break; // Even the essentials do not fit: let the terminal cut them.
+        }
+        kept.remove(least);
+    }
+    join(&kept)
 }
 
 fn describe(marks: &Marks) -> String {
@@ -1023,6 +1150,32 @@ mod tests {
         }
         assert_eq!(rank_key('6'), None);
         assert_eq!(rank_key('a'), None);
+    }
+
+    #[test]
+    fn the_least_important_parts_go_first() {
+        let parts = [
+            (1, "12/653".to_owned()),
+            (3, "burst 2/6".to_owned()),
+            (2, "P1011259".to_owned()),
+            (1, String::new()),
+            (1, "│ ✓1 ✗2 ?3".to_owned()),
+        ];
+        assert_eq!(fit(&parts, 80), " 12/653  burst 2/6  P1011259  │ ✓1 ✗2 ?3");
+        assert_eq!(fit(&parts, 32), " 12/653  P1011259  │ ✓1 ✗2 ?3");
+        assert_eq!(fit(&parts, 20), " 12/653  │ ✓1 ✗2 ?3");
+        // The essentials stay even when they do not fit.
+        assert_eq!(fit(&parts, 5), " 12/653  │ ✓1 ✗2 ?3");
+    }
+
+    #[test]
+    fn keys_that_do_not_fit_are_left_out_but_help_stays() {
+        let keys = [("←→", "shot"), ("k", "keep"), ("?", "help")];
+        let text = |width| keys_line(&keys, width).to_string();
+        assert_eq!(text(80).trim_end(), " ←→ shot   k keep   ? help");
+        assert!(text(20).contains("? help"));
+        assert!(!text(20).contains("keep"));
+        assert!(text(5).contains("? help"));
     }
 
     #[test]
