@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,23 @@ pub enum Job {
     Deband(usize),
 }
 
+impl Job {
+    fn index_mut(&mut self) -> &mut usize {
+        match self {
+            Job::Head(i) | Job::Preview(i) | Job::Full(i) | Job::Assess(i) | Job::Deband(i) => i,
+        }
+    }
+
+    fn index(self) -> usize {
+        let mut job = self;
+        *job.index_mut()
+    }
+}
+
+/// Counts the changes of the list of shots: a result of a job started
+/// before a change speaks of the old indices.
+pub type Epoch = u64;
+
 pub enum Loaded {
     Head {
         index: usize,
@@ -49,9 +66,10 @@ pub enum Loaded {
         assessment: Option<Assessment>,
     },
     Debanded {
-        index: usize,
+        /// The RAW corrected: the list may have changed since.
+        raw: PathBuf,
         /// The DNG written and what was removed, or why not.
-        result: Result<(PathBuf, Pattern), String>,
+        result: Result<(PathBuf, Box<Pattern>), String>,
     },
     Picture {
         job: Job,
@@ -66,6 +84,7 @@ struct Queue {
     pinned: VecDeque<Job>,
     waiting: VecDeque<Job>,
     running: HashSet<Job>,
+    epoch: Epoch,
     closed: bool,
 }
 
@@ -99,31 +118,77 @@ impl Cache {
 
 pub struct Loader {
     queue: Arc<(Mutex<Queue>, Condvar)>,
+    shots: Arc<RwLock<Vec<Shot>>>,
+    cache: Arc<Mutex<Cache>>,
 }
 
 impl Loader {
     pub fn new(
-        shots: Arc<Vec<Shot>>,
+        shots: Vec<Shot>,
         threads: usize,
-        results: Sender<Loaded>,
+        results: Sender<(Epoch, Loaded)>,
         meta: Arc<Mutex<MetaCache>>,
     ) -> Loader {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+        let shots = Arc::new(RwLock::new(shots));
         let cache = Arc::new(Mutex::new(Cache::default()));
         for _ in 0..threads {
             let (queue, shots, results) = (Arc::clone(&queue), Arc::clone(&shots), results.clone());
             let (cache, meta) = (Arc::clone(&cache), Arc::clone(&meta));
             thread::spawn(move || {
-                while let Some(job) = next_job(&queue) {
-                    let loaded = run(&shots, &cache, &meta, job);
+                while let Some((job, epoch)) = next_job(&queue) {
+                    let shot = shots.read().unwrap()[job.index()].clone();
+                    let loaded = run(&shot, &cache, &meta, job);
                     queue.0.lock().unwrap().running.remove(&job);
-                    if results.send(loaded).is_err() {
+                    if results.send((epoch, loaded)).is_err() {
                         break;
                     }
                 }
             });
         }
-        Loader { queue }
+        Loader {
+            queue,
+            shots,
+            cache,
+        }
+    }
+
+    /// The epoch of the list of shots: results from an older one are stale.
+    pub fn epoch(&self) -> Epoch {
+        self.queue.0.lock().unwrap().epoch
+    }
+
+    /// Adds a shot at `index`, such as a DNG just written: the jobs
+    /// waiting are dropped, the pinned ones follow their shot, and the
+    /// results of the running ones will be stale.
+    pub fn insert(&self, index: usize, shot: Shot) {
+        let (lock, wake) = &*self.queue;
+        let mut queue = lock.lock().unwrap();
+        self.shots.write().unwrap().insert(index, shot);
+        for job in &mut queue.pinned {
+            let i = job.index_mut();
+            if *i >= index {
+                *i += 1;
+            }
+        }
+        self.change(&mut queue);
+        wake.notify_all();
+    }
+
+    /// Replaces the shot at `index` by a new version of its files, such as
+    /// a DNG written again: what was loaded of it is forgotten.
+    pub fn replace(&self, index: usize, shot: Shot) {
+        let (lock, wake) = &*self.queue;
+        let mut queue = lock.lock().unwrap();
+        self.shots.write().unwrap()[index] = shot;
+        self.change(&mut queue);
+        wake.notify_all();
+    }
+
+    fn change(&self, queue: &mut Queue) {
+        queue.waiting.clear();
+        queue.epoch += 1;
+        *self.cache.lock().unwrap() = Cache::default();
     }
 
     /// Adds a job that must run whatever the viewer asks for next, such as
@@ -159,8 +224,9 @@ impl Drop for Loader {
     }
 }
 
-/// Waits for the most urgent job, or `None` once the loader is dropped.
-fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<Job> {
+/// Waits for the most urgent job, with the epoch it was started in, or
+/// `None` once the loader is dropped.
+fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<(Job, Epoch)> {
     let (lock, wake) = queue;
     let mut queue = lock.lock().unwrap();
     loop {
@@ -173,21 +239,21 @@ fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<Job> {
             .or_else(|| queue.waiting.pop_front())
         {
             queue.running.insert(job);
-            return Some(job);
+            return Some((job, queue.epoch));
         }
         queue = wake.wait(queue).unwrap();
     }
 }
 
-fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) -> Loaded {
+/// Runs a job on its shot.
+fn run(shot: &Shot, cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) -> Loaded {
     let start = Instant::now();
-    let shot = |index: usize| &shots[index];
-    // The preview of a shot, from the cache or decoded and cached.
+    // The preview of the shot, from the cache or decoded and cached.
     let preview = |index: usize| -> Result<Arc<Picture>, String> {
         if let Some(picture) = cache.lock().unwrap().preview(index) {
             return Ok(picture);
         }
-        let picture = picture::preview(shot(index))
+        let picture = picture::preview(shot)
             .map(Arc::new)
             .map_err(|err| err.to_string())?;
         cache.lock().unwrap().keep_preview(index, &picture);
@@ -201,11 +267,11 @@ fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) 
     match job {
         Job::Head(index) => {
             // The cache spares reading the file when it has not changed.
-            let cached = meta.lock().unwrap().get(shot(index));
+            let cached = meta.lock().unwrap().get(shot);
             let (exif, thumbnail) = match cached {
                 Some((exif, thumbnail)) => (Ok(exif), thumbnail),
                 None => {
-                    let head = Head::read(shot(index));
+                    let head = Head::read(shot);
                     let exif = head
                         .as_ref()
                         .map_err(|err| err.to_string())
@@ -213,11 +279,9 @@ fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) 
                     let thumbnail = head
                         .ok()
                         .and_then(|head| head.thumbnail())
-                        .or_else(|| picture::thumbnail(shot(index)));
+                        .or_else(|| picture::thumbnail(shot));
                     if let Ok(exif) = &exif {
-                        meta.lock()
-                            .unwrap()
-                            .insert(shot(index), exif, thumbnail.as_ref());
+                        meta.lock().unwrap().insert(shot, exif, thumbnail.as_ref());
                     }
                     (exif, thumbnail)
                 }
@@ -229,18 +293,18 @@ fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) 
                 index,
                 exif,
                 thumbnail,
-                marks: rawtherapee::read_marks(shot(index)).map_err(|err| err.to_string()),
+                marks: rawtherapee::read_marks(shot).map_err(|err| err.to_string()),
             }
         }
         Job::Preview(index) => loaded(job, preview(index)),
-        Job::Full(index) => loaded(
+        Job::Full(_) => loaded(
             job,
-            picture::full(shot(index))
+            picture::full(shot)
                 .map(Arc::new)
                 .map_err(|err| err.to_string()),
         ),
-        Job::Deband(index) => {
-            let result = match shot(index).raw.as_deref() {
+        Job::Deband(_) => {
+            let result = match shot.raw.as_deref() {
                 None => Err("this shot has no RAW file".to_owned()),
                 Some(raw) => {
                     let dng = debanding::output_path(raw);
@@ -249,16 +313,19 @@ fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) 
                         .and_then(|pattern| {
                             rawtherapee::copy_sidecar(raw, &dng)
                                 .map_err(|err| format!("{}: {err}", dng.display()))?;
-                            Ok((dng, pattern))
+                            Ok((dng, Box::new(pattern)))
                         })
                 }
             };
-            Loaded::Debanded { index, result }
+            Loaded::Debanded {
+                raw: shot.raw.clone().unwrap_or_default(),
+                result,
+            }
         }
         Job::Assess(index) => {
             let focus = match cache.lock().unwrap().exifs.get(&index) {
                 Some(exif) => exif.focus_point,
-                None => corrode_core::exif::read(shot(index))
+                None => corrode_core::exif::read(shot)
                     .ok()
                     .and_then(|exif| exif.focus_point),
             };

@@ -18,7 +18,7 @@ use corrode_core::bursts;
 use corrode_core::cache::Cache;
 use corrode_core::exif::Exif;
 use corrode_core::marks::Marks;
-use corrode_core::pairing::Shot;
+use corrode_core::pairing::{self, Shot};
 use corrode_core::picture::Picture;
 use corrode_core::rawtherapee::Config;
 use image::DynamicImage;
@@ -27,10 +27,10 @@ use ratatui_image::FontSize;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 
-use crate::app::{App, Filter, Time, burst_around};
+use crate::app::{App, Command, Filter, Time, burst_around};
 use crate::culling::{self, Assessment, Progress};
 use crate::encoder::{Encoded, Encoder, Request};
-use crate::loader::{Job, Loaded, Loader};
+use crate::loader::{Epoch, Job, Loaded, Loader};
 
 /// Shots decoded ahead on each side of the current one.
 const PRELOAD: usize = 2;
@@ -65,7 +65,8 @@ impl ShotState {
 
 pub struct Viewer {
     dir: PathBuf,
-    shots: Arc<Vec<Shot>>,
+    /// Sorted by stem; the loader has its own copy, kept the same.
+    shots: Vec<Shot>,
     states: Vec<ShotState>,
     /// When each shot was taken, as far as read: bursts come from it.
     times: Vec<Time>,
@@ -76,7 +77,7 @@ pub struct Viewer {
     filter: Filter,
     pub app: App,
     loader: Loader,
-    loaded: Receiver<Loaded>,
+    loaded: Receiver<(Epoch, Loaded)>,
     encoder: Encoder,
     encoded: Receiver<Encoded>,
     /// Used for the thumbnails, which are small enough to encode here.
@@ -110,7 +111,6 @@ impl Viewer {
         picker: Picker,
         config: Result<Config, String>,
     ) -> Viewer {
-        let shots = Arc::new(shots);
         let (loaded_tx, loaded) = mpsc::channel();
         let (encoded_tx, encoded) = mpsc::channel();
         let cache = Arc::new(Mutex::new(Cache::open(&dir)));
@@ -124,12 +124,7 @@ impl Viewer {
             times: vec![Time::Unknown; shots.len()],
             filter: Filter::All,
             app: App::new(shots.len()),
-            loader: Loader::new(
-                Arc::clone(&shots),
-                thread_count(),
-                loaded_tx,
-                Arc::clone(&cache),
-            ),
+            loader: Loader::new(shots.clone(), thread_count(), loaded_tx, Arc::clone(&cache)),
             cache,
             cache_saved: false,
             loaded,
@@ -234,9 +229,47 @@ impl Viewer {
         self.cache_saved = true;
     }
 
+    /// Shows a shot just written next to the others, such as a debanded
+    /// DNG, or shows it afresh when it was written again, and goes to it.
+    fn add_shot(&mut self, shot: Shot) {
+        let index = match self.shots.iter().position(|s| s.stem == shot.stem) {
+            Some(index) => {
+                self.shots[index] = shot.clone();
+                self.loader.replace(index, shot);
+                self.states[index] = ShotState::default();
+                self.times[index] = Time::Unknown;
+                index
+            }
+            None => {
+                let index = self.shots.partition_point(|s| s.stem < shot.stem);
+                self.shots.insert(index, shot.clone());
+                self.loader.insert(index, shot);
+                self.states.insert(index, ShotState::default());
+                self.times.insert(index, Time::Unknown);
+                self.app.count += 1;
+                index
+            }
+        };
+        // Everything indexed is stale, and is loaded again.
+        self.previews.clear();
+        self.full = None;
+        self.timings.clear();
+        self.scheduled = None;
+        self.requested = None;
+        self.shown = None;
+        self.cache_saved = false;
+        self.app.apply(Command::GoTo(index), None, self.view);
+    }
+
     /// Takes in what the background threads have loaded or encoded.
     pub fn receive(&mut self) {
-        while let Ok(loaded) = self.loaded.try_recv() {
+        while let Ok((epoch, loaded)) = self.loaded.try_recv() {
+            // A job started before a shot was added speaks of the old
+            // indices: it is asked for again. A correction is told by its
+            // file, which does not move.
+            if epoch != self.loader.epoch() && !matches!(loaded, Loaded::Debanded { .. }) {
+                continue;
+            }
             match loaded {
                 Loaded::Head {
                     index,
@@ -255,19 +288,24 @@ impl Viewer {
                 Loaded::Assessment { index, assessment } => {
                     self.states[index].assessment = Some(assessment);
                 }
-                Loaded::Debanded { index, result } => {
-                    let stem = self.shots[index].stem.to_string_lossy();
-                    self.message = Some(match result {
-                        Ok((dng, pattern)) => Ok(format!(
-                            "{stem}: bands every {:.0} rows removed (R {:.1}% G {:.1}% B {:.1}%), written to {}; restart to see it",
-                            pattern.period,
-                            100.0 * pattern.amplitude(0),
-                            100.0 * pattern.amplitude(1),
-                            100.0 * pattern.amplitude(2),
-                            dng.file_name().unwrap_or_default().to_string_lossy()
-                        )),
-                        Err(err) => Err(format!("{stem}: {err}")),
-                    });
+                Loaded::Debanded { raw, result } => {
+                    let stem = raw.file_stem().unwrap_or_default().to_string_lossy();
+                    match result {
+                        Ok((dng, pattern)) => {
+                            self.message = Some(Ok(format!(
+                                "{stem}: bands every {:.0} rows removed (R {:.1}% G {:.1}% B {:.1}%) → {}",
+                                pattern.period,
+                                100.0 * pattern.amplitude(0),
+                                100.0 * pattern.amplitude(1),
+                                100.0 * pattern.amplitude(2),
+                                dng.file_name().unwrap_or_default().to_string_lossy()
+                            )));
+                            if let Some(shot) = pairing::pair([dng]).pop() {
+                                self.add_shot(shot);
+                            }
+                        }
+                        Err(err) => self.message = Some(Err(format!("{stem}: {err}"))),
+                    }
                 }
                 Loaded::Picture {
                     job,

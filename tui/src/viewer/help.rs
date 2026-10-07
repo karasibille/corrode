@@ -108,7 +108,7 @@ impl Viewer {
         key(
             &mut lines,
             "d / D",
-            "remove the light bands of this shot's RAW into a DNG next to it, in the background (D: even when none were found); its sidecar is copied, so the DNG keeps the marks. Restart to see the DNG.",
+            "remove the light bands of this shot's RAW into a DNG next to it, in the background (D: even when none were found); its sidecar is copied, so the DNG keeps the marks, and the DNG is shown once written.",
         );
 
         section(&mut lines, "Other keys");

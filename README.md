@@ -38,7 +38,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | r y g b p | Red, yellow, green, blue, purple label (again to clear) |
 | x, Delete | Reject / restore |
 | f | Filter: all, unsorted (left to cull), kept, rejected |
-| d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it (D: even when none were found) |
+| d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it, shown once written (D: even when none were found) |
 | z, Enter | 100% zoom; arrows then move around |
 | o / O | Open the shot / the directory in RawTherapee |
 | ? | Full help |
