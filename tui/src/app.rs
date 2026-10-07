@@ -10,9 +10,17 @@ use corrode_core::marks::{ColorLabel, Marks};
 pub enum Mode {
     /// The whole picture, scaled to the screen.
     Fit,
-    /// The full-size picture at 100%, one image pixel per screen pixel,
-    /// centred on this point of the image.
-    Zoom { x: u32, y: u32 },
+    /// The full-size picture, centred on this point of the image, at
+    /// `scale` screen pixels per image pixel: 1 is 100%.
+    Zoom { x: u32, y: u32, scale: u32 },
+}
+
+/// The largest zoom: 800%.
+pub const MAX_SCALE: u32 = 8;
+
+/// The view, in image pixels, at a zoom scale.
+pub fn scaled_view(view: (u32, u32), scale: u32) -> (u32, u32) {
+    (view.0 / scale, view.1 / scale)
 }
 
 /// A user command, decoded from a key.
@@ -23,7 +31,12 @@ pub enum Command {
     First,
     Last,
     GoTo(usize),
+    /// Between the whole picture and 100%.
     ToggleZoom,
+    /// Doubles the zoom, from the whole picture to 100% first.
+    ZoomIn,
+    /// Halves the zoom, back to the whole picture below 100%.
+    ZoomOut,
     /// Moves the zoomed view by a fraction of the screen, in eighths.
     Pan {
         dx: i32,
@@ -92,29 +105,59 @@ impl App {
             Command::Last => self.go_to(self.count.saturating_sub(1)),
             Command::GoTo(index) => self.go_to(index),
             Command::ToggleZoom => {
-                self.mode = match (self.mode, full_size) {
-                    (Mode::Fit, Some((width, height))) => Mode::Zoom {
-                        x: width / 2,
-                        y: height / 2,
+                self.mode = match self.mode {
+                    Mode::Fit => self.zoomed(1, full_size),
+                    Mode::Zoom { .. } => Mode::Fit,
+                };
+            }
+            Command::ZoomIn => {
+                self.mode = match self.mode {
+                    Mode::Fit => self.zoomed(1, full_size),
+                    Mode::Zoom { x, y, scale } => Mode::Zoom {
+                        x,
+                        y,
+                        scale: (scale * 2).min(MAX_SCALE),
                     },
-                    // Not loaded yet: stay in Fit, the key can be pressed again.
-                    (Mode::Fit, None) => Mode::Fit,
-                    (Mode::Zoom { .. }, _) => Mode::Fit,
+                };
+            }
+            Command::ZoomOut => {
+                self.mode = match self.mode {
+                    Mode::Zoom { x, y, scale } if scale > 1 => Mode::Zoom {
+                        x,
+                        y,
+                        scale: scale / 2,
+                    },
+                    _ => Mode::Fit,
                 };
             }
             Command::Pan { dx, dy } => {
-                if let (Mode::Zoom { x, y }, Some(size)) = (self.mode, full_size) {
+                if let (Mode::Zoom { x, y, scale }, Some(size)) = (self.mode, full_size) {
+                    let view = scaled_view(view, scale);
                     let step = |position: u32, delta: i32, view: u32| {
                         let moved = i64::from(position) + i64::from(delta) * i64::from(view) / 8;
                         moved.max(0) as u32
                     };
                     let (x, y) =
                         clamp_center((step(x, dx, view.0), step(y, dy, view.1)), size, view);
-                    self.mode = Mode::Zoom { x, y };
+                    self.mode = Mode::Zoom { x, y, scale };
                 }
             }
             Command::Mark(_) => {}
             Command::Quit => self.quit = true,
+        }
+    }
+
+    /// The zoom at `scale` on the centre of the full picture; the whole
+    /// picture while it is not loaded, so that the key can be pressed
+    /// again.
+    fn zoomed(&self, scale: u32, full_size: Option<(u32, u32)>) -> Mode {
+        match full_size {
+            Some((width, height)) => Mode::Zoom {
+                x: width / 2,
+                y: height / 2,
+                scale,
+            },
+            None => Mode::Fit,
         }
     }
 
@@ -248,8 +291,8 @@ fn clamp_center(center: (u32, u32), image: (u32, u32), view: (u32, u32)) -> (u32
     )
 }
 
-/// The part of the image shown at 100%: `(x, y, width, height)`, at most
-/// the size of the view and always inside the image.
+/// The part of the image shown: `(x, y, width, height)`, at most the
+/// size of the view (in image pixels) and always inside the image.
 pub fn zoom_crop(center: (u32, u32), image: (u32, u32), view: (u32, u32)) -> (u32, u32, u32, u32) {
     let (cx, cy) = clamp_center(center, image, view);
     let width = view.0.min(image.0);
@@ -292,8 +335,51 @@ mod tests {
         app.apply(Command::ToggleZoom, None, VIEW);
         assert_eq!(app.mode, Mode::Fit);
         app.apply(Command::ToggleZoom, Some(IMAGE), VIEW);
-        assert_eq!(app.mode, Mode::Zoom { x: 2592, y: 1944 });
+        assert_eq!(
+            app.mode,
+            Mode::Zoom {
+                x: 2592,
+                y: 1944,
+                scale: 1
+            }
+        );
         app.apply(Command::ToggleZoom, Some(IMAGE), VIEW);
+        assert_eq!(app.mode, Mode::Fit);
+    }
+
+    #[test]
+    fn zooming_in_doubles_up_to_the_largest_scale_and_out_leaves_the_zoom() {
+        let mut app = App::new(1);
+        app.apply(Command::ZoomOut, Some(IMAGE), VIEW);
+        assert_eq!(app.mode, Mode::Fit);
+        app.apply(Command::ZoomIn, Some(IMAGE), VIEW);
+        let scale = |app: &App| match app.mode {
+            Mode::Zoom { scale, .. } => scale,
+            Mode::Fit => 0,
+        };
+        assert_eq!(scale(&app), 1);
+        app.apply(Command::Pan { dx: 1, dy: 0 }, Some(IMAGE), VIEW);
+        for _ in 0..5 {
+            app.apply(Command::ZoomIn, Some(IMAGE), VIEW);
+        }
+        assert_eq!(scale(&app), MAX_SCALE);
+        // The spot stays: zooming in doubles around it.
+        assert!(matches!(
+            app.mode,
+            Mode::Zoom {
+                x: 2832,
+                y: 1944,
+                ..
+            }
+        ));
+        // Panning moves by eighths of the view in image pixels.
+        app.apply(Command::Pan { dx: 1, dy: 0 }, Some(IMAGE), VIEW);
+        assert!(matches!(app.mode, Mode::Zoom { x: 2862, .. }));
+        for _ in 0..3 {
+            app.apply(Command::ZoomOut, Some(IMAGE), VIEW);
+        }
+        assert_eq!(scale(&app), 1);
+        app.apply(Command::ZoomOut, Some(IMAGE), VIEW);
         assert_eq!(app.mode, Mode::Fit);
     }
 
@@ -402,20 +488,28 @@ mod tests {
             app.mode,
             Mode::Zoom {
                 x: 2592 + 240,
-                y: 1944 - 135
+                y: 1944 - 135,
+                scale: 1
             }
         );
 
         for _ in 0..100 {
             app.apply(Command::Pan { dx: -1, dy: -1 }, Some(IMAGE), VIEW);
         }
-        assert_eq!(app.mode, Mode::Zoom { x: 960, y: 540 });
+        assert_eq!(
+            app.mode,
+            Mode::Zoom {
+                x: 960,
+                y: 540,
+                scale: 1
+            }
+        );
         assert_eq!(zoom_crop((960, 540), IMAGE, VIEW), (0, 0, 1920, 1080));
 
         for _ in 0..100 {
             app.apply(Command::Pan { dx: 1, dy: 1 }, Some(IMAGE), VIEW);
         }
-        let Mode::Zoom { x, y } = app.mode else {
+        let Mode::Zoom { x, y, .. } = app.mode else {
             panic!("left the zoom")
         };
         assert_eq!(

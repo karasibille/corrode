@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corrode_core::picture::Picture;
+use image::imageops::FilterType;
 use ratatui::layout::Size;
 use ratatui_image::Resize;
 use ratatui_image::picker::Picker;
@@ -16,9 +17,11 @@ use ratatui_image::protocol::Protocol;
 #[derive(Clone)]
 pub struct Request {
     pub picture: Arc<Picture>,
-    /// `(x, y, width, height)` of the part to show at 100%; the whole
-    /// picture, scaled to the area, when `None`.
+    /// `(x, y, width, height)` of the part to show, each of its pixels
+    /// taking `scale` screen pixels; the whole picture, scaled to the
+    /// area, when `None`.
     pub crop: Option<(u32, u32, u32, u32)>,
+    pub scale: u32,
     pub area: Size,
 }
 
@@ -26,6 +29,7 @@ impl PartialEq for Request {
     fn eq(&self, other: &Request) -> bool {
         Arc::ptr_eq(&self.picture, &other.picture)
             && self.crop == other.crop
+            && self.scale == other.scale
             && self.area == other.area
     }
 }
@@ -61,7 +65,20 @@ fn encode_loop(picker: &Picker, requests: &Receiver<Request>, results: &Sender<E
         }
         let start = Instant::now();
         let image = match request.crop {
-            Some((x, y, width, height)) => request.picture.image.crop_imm(x, y, width, height),
+            Some((x, y, width, height)) => {
+                let part = request.picture.image.crop_imm(x, y, width, height);
+                if request.scale > 1 {
+                    // Pixels are repeated, not blended: the zoom shows
+                    // them as they are.
+                    part.resize_exact(
+                        width * request.scale,
+                        height * request.scale,
+                        FilterType::Nearest,
+                    )
+                } else {
+                    part
+                }
+            }
             None => request.picture.image.clone(),
         };
         let resize = match request.crop {

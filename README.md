@@ -40,6 +40,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | f | Filter: all, unsorted (left to cull), kept, rejected |
 | d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it, shown once written (D: even when none were found) |
 | z, Enter | 100% zoom; arrows then move around, Ctrl+arrows change shot at the same spot to compare |
+| + / - | Zoom in (200, 400, 800%) / out |
 | o / O | Open the shot / the directory in RawTherapee |
 | ? | Full help |
 | Esc, q | Leave the zoom / quit |

@@ -55,6 +55,8 @@ impl Viewer {
             KeyCode::Esc if zoomed => Command::ToggleZoom,
             KeyCode::Esc => Command::Quit,
             KeyCode::Char('z') | KeyCode::Enter => Command::ToggleZoom,
+            KeyCode::Char('+' | '=') => Command::ZoomIn,
+            KeyCode::Char('-') => Command::ZoomOut,
             KeyCode::Left if pan => Command::Pan { dx: -1, dy: 0 },
             KeyCode::Right if pan => Command::Pan { dx: 1, dy: 0 },
             KeyCode::Up if pan => Command::Pan { dx: 0, dy: -1 },

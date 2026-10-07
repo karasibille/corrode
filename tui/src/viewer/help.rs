@@ -53,6 +53,11 @@ impl Viewer {
             "z  Enter",
             "zoom to 100%; arrows move around, Ctrl+arrows and the other keys change shot at the same spot, to compare; again or Esc to leave",
         );
+        key(
+            &mut lines,
+            "+  -",
+            "zoom in, up to 800%, pixels repeated; zoom out, down to the whole picture",
+        );
 
         section(
             &mut lines,

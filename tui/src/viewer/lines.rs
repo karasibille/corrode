@@ -71,8 +71,8 @@ impl Viewer {
                 vec![Span::from("≋ light bands").fg(Color::Magenta).bold()],
             ));
         }
-        if matches!(self.app.mode, Mode::Zoom { .. }) {
-            parts.push((1, vec![Span::from("100%").bold()]));
+        if let Mode::Zoom { scale, .. } = self.app.mode {
+            parts.push((1, vec![Span::from(format!("{}%", 100 * scale)).bold()]));
         }
         fit(&parts, usize::from(width))
     }

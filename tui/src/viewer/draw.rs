@@ -11,7 +11,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui_image::{Image, Resize};
 
 use super::{THUMB_ROWS, Viewer};
-use crate::app::{Mode, zoom_crop};
+use crate::app::{Mode, scaled_view, zoom_crop};
 use crate::encoder::Request;
 use crate::text::{centered, keys_line, short_marks};
 
@@ -96,11 +96,14 @@ impl Viewer {
         let index = self.app.index;
         let wanted = match self.app.mode {
             Mode::Fit => self.previews.get(&index).map(|p| (p.clone(), None)),
-            Mode::Zoom { x, y } => self.full_picture().map(|picture| {
+            Mode::Zoom { x, y, scale } => self.full_picture().map(|picture| {
                 let size = (picture.image.width(), picture.image.height());
                 (
                     Ok(Arc::clone(picture)),
-                    Some(zoom_crop((x, y), size, self.view)),
+                    Some((
+                        zoom_crop((x, y), size, scaled_view(self.view, scale)),
+                        scale,
+                    )),
                 )
             }),
         };
@@ -110,7 +113,8 @@ impl Viewer {
             Some((Ok(picture), crop)) => {
                 let request = Request {
                     picture,
-                    crop,
+                    crop: crop.map(|(crop, _)| crop),
+                    scale: crop.map_or(1, |(_, scale)| scale),
                     area: Size::new(area.width, area.height),
                 };
                 if self.requested.as_ref() != Some(&request) {
