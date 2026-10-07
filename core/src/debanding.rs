@@ -11,7 +11,9 @@
 //! noise is not stamped into them. The bands are not the same everywhere:
 //! each lamp flickers with its own phase and lights its own part of the
 //! scene, so the gains are folded for each block of a grid over the
-//! picture and interpolated between blocks.
+//! picture and interpolated between blocks. A block whose fold shows no
+//! coherent pattern, because it is dark or lit by a steady lamp, is left
+//! alone too: correcting it would stamp noise or bands into it.
 //!
 //! The correction works on the raw mosaic, before demosaicing and the
 //! camera's tone curve, where light is still linear: a band is then a
@@ -45,8 +47,23 @@ const BLOCK_PERIODS: f64 = 8.0;
 /// The largest gain a band can have: bands are a few percent, anything
 /// beyond is noise from a dark block.
 const MAX_GAIN: f64 = 1.25;
+/// Harmonics of the period the gains of a block are fitted with: enough
+/// for the sharp edges of a dimmed LED, few enough to leave out noise.
+const HARMONICS: usize = 4;
+/// Share of a block's folded pattern the harmonics explain when it is
+/// noise (about `HARMONICS` of `BINS / 2` frequencies) and when it is
+/// bands: the correction of a block fades in between.
+const NOISE_COHERENCE: f32 = 0.4;
+const BAND_COHERENCE: f32 = 0.8;
 /// The gamma of a camera's preview, near enough to take the bands off it.
 const PREVIEW_GAMMA: f32 = 2.2;
+/// Fraction of the light range, below white, over which the correction
+/// fades out: a clipped pixel has no bands, and dividing it would make
+/// some, while just under white its band is partly clipped already.
+const CLIP_FADE: f32 = 0.2;
+/// Above this fraction of the white level a pixel is taken for clipped
+/// and left out of the measurement.
+const CLIP_MEASURE: f32 = 0.95;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -76,13 +93,15 @@ pub struct Pattern {
 
 impl Pattern {
     /// The strength of the bands of a color: the largest deviation of its
-    /// gain from 1, as a fraction. Zero for a color left alone.
+    /// gain from 1, as a fraction, in the median block among those
+    /// corrected. Zero for a color left alone.
     pub fn amplitude(&self, color: usize) -> f32 {
         self.gains[color].as_ref().map_or(0.0, |grid| {
             let mut amplitudes: Vec<f32> = grid
                 .blocks
                 .iter()
                 .map(|block| block.iter().map(|g| (g - 1.0).abs()).fold(0.0, f32::max))
+                .filter(|&amplitude| amplitude > 0.0)
                 .collect();
             amplitudes.sort_by(|a, b| a.total_cmp(b));
             amplitudes.get(amplitudes.len() / 2).copied().unwrap_or(0.0)
@@ -174,6 +193,8 @@ pub struct Mosaic<'a> {
     pub data: &'a [u16],
     /// The black level of each color, below which there is no light.
     pub black: [f32; 4],
+    /// The white level of each color, where the sensor clips.
+    pub white: [f32; 4],
     pub color_at: &'a dyn Fn(usize, usize) -> usize,
 }
 
@@ -182,34 +203,47 @@ pub struct Mosaic<'a> {
 const STRIPS: usize = 32;
 
 /// For each of `strips` column strips, the rows holding a color as
-/// `(row, light, local)`: the mean light of the row above black, in
-/// sensor levels, and the light of the scene around it, its slow changes
-/// without the bands and the noise. `light / local` is the bands.
-fn strip_profiles(mosaic: &Mosaic, color: usize, strips: usize) -> Vec<Vec<(usize, f64, f64)>> {
+/// `(row, light)`: the mean light of the row above black, in sensor
+/// levels. Every strip has the same rows.
+fn strip_profiles(mosaic: &Mosaic, color: usize, strips: usize) -> Vec<Vec<(usize, f64)>> {
     let Mosaic {
         width,
         height,
         data,
         black,
+        white,
         color_at,
     } = mosaic;
     let strip_width = width / strips;
     if strip_width == 0 {
         return Vec::new();
     }
-    let mut profiles: Vec<Vec<(usize, f64, f64)>> = vec![Vec::new(); strips];
+    let clip = f64::from(black[color] + CLIP_MEASURE * (white[color] - black[color]));
+    let mut profiles: Vec<Vec<(usize, f64)>> = vec![Vec::new(); strips];
     for y in 0..*height {
         for (strip, profile) in profiles.iter_mut().enumerate() {
+            // Clipped pixels show no bands: left out, unless the whole
+            // row of the strip is clipped.
             let (mut sum, mut count) = (0f64, 0usize);
+            let (mut clipped_sum, mut clipped) = (0f64, 0usize);
             for x in strip * strip_width..(strip + 1) * strip_width {
                 if color_at(y, x) == color {
-                    sum += (f64::from(data[y * width + x]) - f64::from(black[color])).max(1.0);
-                    count += 1;
+                    let value = f64::from(data[y * width + x]);
+                    let light = (value - f64::from(black[color])).max(1.0);
+                    if value < clip {
+                        sum += light;
+                        count += 1;
+                    } else {
+                        clipped_sum += light;
+                        clipped += 1;
+                    }
                 }
             }
+            if count == 0 {
+                (sum, count) = (clipped_sum, clipped);
+            }
             if count > 0 {
-                let light = sum / count as f64;
-                profile.push((y, light.ln(), light));
+                profile.push((y, sum / count as f64));
             }
         }
     }
@@ -218,15 +252,17 @@ fn strip_profiles(mosaic: &Mosaic, color: usize, strips: usize) -> Vec<Vec<(usiz
         return Vec::new();
     }
     profiles
-        .iter()
-        .map(|profile| {
-            (0..n)
-                .map(|i| {
-                    let (a, b) = (i.saturating_sub(SMOOTHING), (i + SMOOTHING + 1).min(n));
-                    let local = profile[a..b].iter().map(|r| r.1).sum::<f64>() / (b - a) as f64;
-                    (profile[i].0, profile[i].2, local.exp())
-                })
-                .collect()
+}
+
+/// The light of the scene along a profile, without the bands and the
+/// noise: the mean of `light` over a window of `half` rows of the profile
+/// on each side. Takes `light` and gives a value per row.
+fn local_light(profile: &[(usize, f64)], half: usize, light: impl Fn(f64) -> f64) -> Vec<f64> {
+    let n = profile.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(half), (i + half + 1).min(n));
+            profile[a..b].iter().map(|r| light(r.1)).sum::<f64>() / (b - a) as f64
         })
         .collect()
 }
@@ -240,11 +276,16 @@ fn high_passed(mosaic: &Mosaic, color: usize) -> Vec<(usize, f64)> {
     let Some(first) = profiles.first() else {
         return Vec::new();
     };
+    let locals: Vec<Vec<f64>> = profiles
+        .iter()
+        .map(|strip| local_light(strip, SMOOTHING, f64::ln))
+        .collect();
     (0..first.len())
         .map(|i| {
             let mut values: Vec<f64> = profiles
                 .iter()
-                .map(|strip| (strip[i].1 / strip[i].2).ln())
+                .zip(&locals)
+                .map(|(strip, local)| strip[i].1.ln() - local[i])
                 .collect();
             values.sort_by(|a, b| a.total_cmp(b));
             (first[i].0, values[values.len() / 2])
@@ -404,7 +445,7 @@ pub fn estimate(mosaic: &Mosaic) -> Result<Pattern, Error> {
                 light[bin] += row_light;
                 local[bin] += row_local;
             }
-            (0..BINS)
+            let folded: Vec<f32> = (0..BINS)
                 .map(|bin| {
                     if local[bin] > 0.0 {
                         (light[bin] / local[bin]).clamp(1.0 / MAX_GAIN, MAX_GAIN) as f32
@@ -412,10 +453,29 @@ pub fn estimate(mosaic: &Mosaic) -> Result<Pattern, Error> {
                         1.0
                     }
                 })
-                .collect()
+                .collect();
+            smooth_gains(&folded)
         };
         let strips = strip_profiles(mosaic, color, STRIPS);
+        // The light of the scene is the mean over exactly two periods, a
+        // window the bands sum to nothing in: it follows a feature of
+        // the scene as small as a spotlight without taking in the bands,
+        // where the wide window of the detection would pass the feature
+        // for bands. The rows of a color are every other sensor row, so
+        // a window of `period` rows of the profile spans two periods.
+        let half = (period.round() as usize) / 2;
         let mut blocks = Vec::with_capacity(rows * STRIPS);
+        let rows_of: Vec<Vec<(usize, f64, f64)>> = strips
+            .iter()
+            .map(|strip| {
+                let local = local_light(strip, half, |light| light);
+                strip
+                    .iter()
+                    .zip(local)
+                    .map(|(&(row, light), local)| (row, light, local))
+                    .collect()
+            })
+            .collect();
         for by in 0..rows {
             let top = by * block_height;
             // The last row of blocks takes the rows left over.
@@ -424,7 +484,7 @@ pub fn estimate(mosaic: &Mosaic) -> Result<Pattern, Error> {
             } else {
                 top + block_height
             };
-            for strip in &strips {
+            for strip in &rows_of {
                 let rows_in_block: Vec<(usize, f64, f64)> = strip
                     .iter()
                     .copied()
@@ -448,6 +508,38 @@ pub fn estimate(mosaic: &Mosaic) -> Result<Pattern, Error> {
     })
 }
 
+/// The gains of a block from its folded pattern: the first harmonics of
+/// the period fitted to it, so that the noise of the fold is left out,
+/// scaled by how much of the pattern they explain, so that a block
+/// whose fold is noise, as in the dark or under a steady light, is left
+/// alone. The gains average to 1: a block keeps its light.
+fn smooth_gains(folded: &[f32]) -> Vec<f32> {
+    let n = folded.len();
+    let mean = folded.iter().sum::<f32>() / n as f32;
+    let total: f32 = folded.iter().map(|g| (g - mean).powi(2)).sum();
+    if total <= 0.0 {
+        return vec![1.0; n];
+    }
+    let mut fit = vec![0f32; n];
+    let mut explained = 0.0;
+    for k in 1..=HARMONICS {
+        let angle = |bin: usize| 2.0 * PI as f32 * (k * bin) as f32 / n as f32;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (bin, g) in folded.iter().enumerate() {
+            re += (g - mean) * angle(bin).cos();
+            im += (g - mean) * angle(bin).sin();
+        }
+        explained += 2.0 * (re * re + im * im) / n as f32;
+        for (bin, f) in fit.iter_mut().enumerate() {
+            *f += 2.0 / n as f32 * (re * angle(bin).cos() + im * angle(bin).sin());
+        }
+    }
+    let coherence = explained / total;
+    let weight =
+        ((coherence - NOISE_COHERENCE) / (BAND_COHERENCE - NOISE_COHERENCE)).clamp(0.0, 1.0);
+    fit.iter().map(|f| 1.0 + f * weight).collect()
+}
+
 /// How far the bands of each color still stand out after a correction.
 fn residual(mosaic: &Mosaic, period: f64) -> [f64; 4] {
     let mut residual = [0.0; 4];
@@ -466,6 +558,7 @@ pub fn remove(
     data: &mut [u16],
     width: usize,
     black: [f32; 4],
+    white: [f32; 4],
     color_at: &dyn Fn(usize, usize) -> usize,
     pattern: &Pattern,
 ) {
@@ -477,10 +570,16 @@ pub fn remove(
             let Some(grid) = &pattern.gains[color] else {
                 continue;
             };
-            let gain = grid.gain(x, y, bin);
             let value = &mut data[y * width + x];
-            let light = (f32::from(*value) - black[color]) / gain;
-            *value = (light + black[color]).round().clamp(0.0, 65535.0) as u16;
+            let light = f32::from(*value) - black[color];
+            let range = white[color] - black[color];
+            // The correction fades out towards white: a clipped pixel
+            // has no bands to remove, and dividing it would make some.
+            let fade = ((range - light) / (CLIP_FADE * range)).clamp(0.0, 1.0);
+            let gain = 1.0 + (grid.gain(x, y, bin) - 1.0) * fade;
+            *value = (light / gain + black[color])
+                .round()
+                .clamp(0.0, white[color]) as u16;
         }
     }
 }
@@ -515,21 +614,24 @@ pub fn deband(raw: &mut RawImage) -> Result<Pattern, Error> {
     let cfa = raw.camera.cfa.clone();
     let color_at = |y: usize, x: usize| cfa.color_at(y, x);
     let black = raw.blacklevel.as_bayer_array();
+    let white = raw.whitelevel.as_bayer_array();
     let (width, height) = (raw.width, raw.height);
     let mut pattern = estimate(&Mosaic {
         width,
         height,
         data,
         black,
+        white,
         color_at: &color_at,
     })?;
-    remove(data, width, black, &color_at, &pattern);
+    remove(data, width, black, white, &color_at, &pattern);
     pattern.residual = residual(
         &Mosaic {
             width,
             height,
             data,
             black,
+            white,
             color_at: &color_at,
         },
         pattern.period,
@@ -544,6 +646,7 @@ mod tests {
     const WIDTH: usize = 256;
     const HEIGHT: usize = 3200;
     const BLACK: [f32; 4] = [144.0, 143.0, 143.0, 144.0];
+    const WHITE: [f32; 4] = [4095.0; 4];
 
     /// RGGB, as most sensors.
     fn color_at(y: usize, x: usize) -> usize {
@@ -582,6 +685,7 @@ mod tests {
             height: HEIGHT,
             data,
             black: BLACK,
+            white: WHITE,
             color_at: &color_at,
         };
         Spectrum::of(&high_passed(&mosaic, color)).ratio(period)
@@ -604,6 +708,7 @@ mod tests {
             height: HEIGHT,
             data: &data,
             black: BLACK,
+            white: WHITE,
             color_at: &color_at,
         })
         .unwrap();
@@ -616,7 +721,7 @@ mod tests {
         assert_eq!(pattern.amplitude(1), 0.0, "green left alone");
         assert_eq!(pattern.amplitude(2), 0.0, "blue left alone");
 
-        remove(&mut data, WIDTH, BLACK, &color_at, &pattern);
+        remove(&mut data, WIDTH, BLACK, WHITE, &color_at, &pattern);
         let after = residual_peak(&data, 0, period);
         assert!(
             after < before / 20.0,
@@ -634,10 +739,11 @@ mod tests {
             height: HEIGHT,
             data: &data,
             black: BLACK,
+            white: WHITE,
             color_at: &color_at,
         })
         .unwrap();
-        remove(&mut data, WIDTH, BLACK, &color_at, &pattern);
+        remove(&mut data, WIDTH, BLACK, WHITE, &color_at, &pattern);
         let mean =
             |data: &[u16]| data.iter().map(|&v| f64::from(v)).sum::<f64>() / data.len() as f64;
         assert!((mean(&data) - mean(&reference)).abs() < 2.0);
@@ -688,6 +794,44 @@ mod tests {
     }
 
     #[test]
+    fn clipped_pixels_are_left_alone() {
+        let period = 60.0;
+        let band = |y: usize, _: usize| 1.0 + 0.05 * (2.0 * PI * y as f64 / period).sin();
+        let mut data = mosaic(band);
+        // A spotlight: a clipped disc in the middle of the picture.
+        let (cx, cy, radius) = (WIDTH as f64 / 2.0, HEIGHT as f64 / 2.0, 60.0);
+        let clipped = |x: usize, y: usize| {
+            let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+            dx * dx + dy * dy < radius * radius
+        };
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                if clipped(x, y) {
+                    data[y * WIDTH + x] = WHITE[0] as u16;
+                }
+            }
+        }
+        let pattern = estimate(&Mosaic {
+            width: WIDTH,
+            height: HEIGHT,
+            data: &data,
+            black: BLACK,
+            white: WHITE,
+            color_at: &color_at,
+        })
+        .unwrap();
+        assert!((pattern.period - period).abs() < 0.2, "{}", pattern.period);
+        remove(&mut data, WIDTH, BLACK, WHITE, &color_at, &pattern);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                if clipped(x, y) {
+                    assert_eq!(data[y * WIDTH + x], WHITE[0] as u16, "at {x},{y}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_picture_without_bands_has_no_pattern() {
         let data = mosaic(|_, _| 1.0);
         let result = estimate(&Mosaic {
@@ -695,6 +839,7 @@ mod tests {
             height: HEIGHT,
             data: &data,
             black: BLACK,
+            white: WHITE,
             color_at: &color_at,
         });
         assert!(matches!(result, Err(Error::NoBands { .. })));
