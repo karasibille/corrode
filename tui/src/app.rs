@@ -118,14 +118,10 @@ impl App {
         }
     }
 
-    /// Moves to another shot, leaving the zoom: the next photo may not be
-    /// framed like this one.
+    /// Moves to another shot. The zoom stays, at the same spot: the shots
+    /// of a burst are framed alike, and this is how to compare them.
     fn go_to(&mut self, index: usize) {
-        let index = index.min(self.count.saturating_sub(1));
-        if index != self.index {
-            self.index = index;
-            self.mode = Mode::Fit;
-        }
+        self.index = index.min(self.count.saturating_sub(1));
     }
 }
 
@@ -388,11 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn changing_shot_leaves_the_zoom() {
+    fn changing_shot_keeps_the_zoom_at_the_same_spot() {
         let mut app = App::new(2);
         app.apply(Command::ToggleZoom, Some(IMAGE), VIEW);
+        app.apply(Command::Pan { dx: 2, dy: 0 }, Some(IMAGE), VIEW);
+        let spot = app.mode;
         app.apply(Command::Next, None, VIEW);
-        assert_eq!((app.index, app.mode), (1, Mode::Fit));
+        assert_eq!((app.index, app.mode), (1, spot));
     }
 
     #[test]

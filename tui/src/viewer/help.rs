@@ -51,7 +51,7 @@ impl Viewer {
         key(
             &mut lines,
             "z  Enter",
-            "zoom to 100%, then arrows to move; again or Esc to leave",
+            "zoom to 100%; arrows move around, the other keys still change shot, at the same spot, to compare; again or Esc to leave",
         );
 
         section(

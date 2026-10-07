@@ -27,7 +27,7 @@ use ratatui_image::FontSize;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 
-use crate::app::{App, Command, Filter, Time, burst_around};
+use crate::app::{App, Command, Filter, Mode, Time, burst_around};
 use crate::culling::{self, Assessment, Progress};
 use crate::encoder::{Encoded, Encoder, Request};
 use crate::loader::{Epoch, Job, Loaded, Loader};
@@ -88,8 +88,9 @@ pub struct Viewer {
     previews: HashMap<usize, Result<Arc<Picture>, String>>,
     full: Option<(usize, Result<Arc<Picture>, String>)>,
     timings: HashMap<Job, Duration>,
-    /// The shot and burst the jobs were last scheduled for.
-    scheduled: Option<(usize, Range<usize>)>,
+    /// The shot and burst the jobs were last scheduled for, and whether
+    /// it was zoomed.
+    scheduled: Option<(usize, Range<usize>, bool)>,
     requested: Option<Request>,
     shown: Option<Encoded>,
     view: (u32, u32),
@@ -186,7 +187,8 @@ impl Viewer {
     pub fn schedule(&mut self) {
         let index = self.app.index;
         let (burst, _) = self.burst();
-        let scheduled = Some((index, burst.clone()));
+        let zoomed = matches!(self.app.mode, Mode::Zoom { .. });
+        let scheduled = Some((index, burst.clone(), zoomed));
         if self.scheduled == scheduled {
             return;
         }
@@ -204,9 +206,15 @@ impl Viewer {
                 index.checked_sub(distance),
             ]
         });
+        // Zoomed, the full picture is what is on screen: it comes first.
         let mut jobs = vec![Job::Head(index), Job::Preview(index)];
+        if zoomed {
+            jobs.insert(1, Job::Full(index));
+        }
         jobs.extend(neighbours.flatten().map(Job::Preview));
-        jobs.push(Job::Full(index));
+        if !zoomed {
+            jobs.push(Job::Full(index));
+        }
         jobs.extend(burst.map(Job::Assess));
         let mut others: Vec<usize> = (0..self.shots.len()).filter(|&i| i != index).collect();
         others.sort_by_key(|&i| i.abs_diff(index));
