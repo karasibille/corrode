@@ -33,15 +33,17 @@ corrode shows the shots of a directory one at a time, with a strip of the burst 
 | ↑ ↓ ([ ]) | Previous / next burst |
 | s | Sharpest frame of the burst |
 | k | Keep the current shot, reject the rest of the burst, go to the next burst |
+| X | Reject the whole burst, go to the next burst |
 | 1–5, 0 (or & é " ' ( à) | Rating, cleared by 0 |
 | r y g b p | Red, yellow, green, blue, purple label (again to clear) |
 | x, Delete | Reject / restore |
-| f | Filter: all, unsorted, kept, rejected |
+| f | Filter: all, unsorted (left to cull), kept, rejected |
 | z, Enter | 100% zoom; arrows then move around |
 | o / O | Open the shot / the directory in RawTherapee |
+| ? | Full help |
 | Esc, q | Leave the zoom / quit |
 
-Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute.
+There is nothing to save: marks are written as they are set. The status line counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute.
 
 ## Core library
 

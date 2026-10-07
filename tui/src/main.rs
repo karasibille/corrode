@@ -27,7 +27,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
@@ -78,6 +78,8 @@ struct Viewer {
     config: Result<Config, String>,
     /// Result of the last action, shown until the next key.
     message: Option<Result<String, String>>,
+    /// Whether the full help is shown instead of the shots.
+    help: bool,
 }
 
 impl Viewer {
@@ -125,6 +127,7 @@ impl Viewer {
             view: (0, 0),
             config,
             message: None,
+            help: false,
         }
     }
 
@@ -227,6 +230,14 @@ impl Viewer {
 
     fn key(&mut self, key: KeyEvent) {
         self.message = None;
+        if self.help {
+            // Any key closes the help; q still quits.
+            self.help = false;
+            if key.code == KeyCode::Char('q') {
+                self.app.quit = true;
+            }
+            return;
+        }
         let zoomed = matches!(self.app.mode, Mode::Zoom { .. });
         let command = match key.code {
             KeyCode::Char(c) if rank_key(c).is_some() => {
@@ -239,6 +250,11 @@ impl Viewer {
             KeyCode::Char('p') => Command::Mark(MarkChange::ToggleColor(ColorLabel::Purple)),
             KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
             KeyCode::Char('k') => return self.keep_in_burst(),
+            KeyCode::Char('X') => return self.reject_burst(),
+            KeyCode::Char('?') => {
+                self.help = true;
+                return;
+            }
             KeyCode::Char('f') => return self.next_filter(),
             KeyCode::Char('o') => return self.open(false),
             KeyCode::Char('O') => return self.open(true),
@@ -473,7 +489,84 @@ impl Viewer {
         }
     }
 
+    /// Rejects every shot of the current burst, then moves to the next one.
+    fn reject_burst(&mut self) {
+        let (burst, complete) = self.burst();
+        if !complete {
+            self.message = Some(Err(
+                "this burst is still being read, try again in a moment".to_owned()
+            ));
+            return;
+        }
+        let changes: Result<Vec<(usize, Marks)>, String> = burst
+            .clone()
+            .map(|i| {
+                let marks = self.current_marks(i)?;
+                Ok((
+                    i,
+                    Marks {
+                        in_trash: true,
+                        ..marks
+                    },
+                ))
+            })
+            .collect();
+        let result = changes.and_then(|changes| self.write_marks(&changes));
+        self.message =
+            Some(result.map(|()| format!("rejected the {} shots of the burst", burst.len())));
+        if burst.end < self.shots.len() {
+            self.app.apply(Command::GoTo(burst.end), None, self.view);
+        }
+    }
+
+    /// What culling left, printed when quitting. Marks not read yet are
+    /// read now, so that the counts cover the whole directory.
+    fn summary(&mut self) -> String {
+        for index in 0..self.shots.len() {
+            if !self.marks.contains_key(&index) {
+                let marks =
+                    rawtherapee::read_marks(&self.shots[index]).map_err(|err| err.to_string());
+                self.marks.insert(index, marks);
+            }
+        }
+        let progress = self.progress();
+        let unreadable = self.marks.values().filter(|marks| marks.is_err()).count();
+        let mut summary = format!(
+            "{}: {} shots, {} kept, {} rejected, {} unsorted.",
+            self.dir.display(),
+            self.shots.len(),
+            progress.kept,
+            progress.rejected,
+            progress.unsorted,
+        );
+        if unreadable > 0 {
+            summary.push_str(&format!(" {unreadable} with an unreadable sidecar."));
+        }
+        summary.push_str(" Marks are saved in RawTherapee's .pp3 sidecars.");
+        summary
+    }
+
+    /// How far culling has gone, from the marks read so far.
+    fn progress(&self) -> Progress {
+        let count = |filter: Filter| {
+            self.marks
+                .values()
+                .filter(|marks| filter.matches(marks.as_ref().ok()))
+                .count()
+        };
+        Progress {
+            kept: count(Filter::Kept),
+            rejected: count(Filter::Rejected),
+            unsorted: count(Filter::Unsorted),
+            unread: self.shots.len() - self.marks.len(),
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
+        if self.help {
+            frame.render_widget(Paragraph::new(self.help_text()), frame.area());
+            return;
+        }
         let [image_area, strip_area, status_area, info_area, help_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(THUMB_ROWS + 1),
@@ -498,12 +591,100 @@ impl Viewer {
         let help = match &self.message {
             Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
             Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
-            None => Line::from(
-                " ←/→ shot · ↑/↓ burst · s sharpest without bands ◆ (≋ bands) · k keep, reject the rest · 1-5 0 rank · r y g b p color · x reject · f filter · o/O RawTherapee · z zoom · q quit",
-            )
-            .fg(Color::DarkGray),
+            None => keys_line(&[
+                ("←→", "shot"),
+                ("↑↓", "burst"),
+                ("s", "sharpest"),
+                ("k", "keep, reject the rest"),
+                ("X", "reject burst"),
+                ("1-5", "rank"),
+                ("x", "reject"),
+                ("f", "filter"),
+                ("?", "help"),
+                ("q", "quit"),
+            ]),
         };
         frame.render_widget(Paragraph::new(help), help_area);
+    }
+
+    /// The full help, with every key and what the marks mean.
+    fn help_text(&self) -> Vec<Line<'static>> {
+        let section = |title: &'static str| Line::from(title).bold().fg(Color::Yellow);
+        let key = |keys: &'static str, what: &'static str| {
+            Line::from(vec![
+                Span::from(format!("  {keys:<22}")).bold().fg(Color::Cyan),
+                Span::from(what),
+            ])
+        };
+        let ms = |duration: Option<&Duration>| {
+            duration.map_or("–".to_owned(), |d| format!("{} ms", d.as_millis()))
+        };
+        let index = self.app.index;
+        let decode = self.timings.get(&Job::Preview(index));
+        let draw = self.shown.as_ref().map(|shown| &shown.elapsed);
+        vec![
+            section(" Browsing"),
+            key("← →  h l  space", "previous / next shot"),
+            key("↑ ↓  [ ]", "previous / next burst"),
+            key("Home End", "first / last shot"),
+            key(
+                "s",
+                "go to the sharpest shot of the burst without light bands (◆)",
+            ),
+            key(
+                "z  Enter",
+                "zoom to 100%, then arrows to move; again or Esc to leave",
+            ),
+            Line::default(),
+            section(" Marking (saved at once in RawTherapee's .pp3 sidecars)"),
+            key(
+                "k",
+                "keep this shot (at least ★1), reject the rest of the burst, next burst",
+            ),
+            key("X", "reject the whole burst, next burst"),
+            key("1-5  & é \" ' (", "rating; 0 or à clears it"),
+            key(
+                "r y g b p",
+                "red, yellow, green, blue, purple label; again to clear",
+            ),
+            key("x  Delete", "reject / restore this shot"),
+            Line::default(),
+            section(" Filters"),
+            key("f", "next filter: all → unsorted → kept → rejected → all"),
+            Line::from("    Browsing only goes through the shots of the filter; the strip still"),
+            Line::from(
+                "    shows the whole burst. unsorted: neither rated, labelled nor rejected,",
+            ),
+            Line::from(
+                "    what is left to cull. kept: rated or labelled, not rejected. rejected:",
+            ),
+            Line::from("    to check nothing good went there."),
+            Line::default(),
+            section(" Under the thumbnails"),
+            Line::from("    ★3 rating · R Y G B P label · ✗ rejected · ◆ sharpest · ≋ light bands"),
+            Line::default(),
+            section(" Done?"),
+            Line::from(
+                "    There is nothing to save: marks are written as you set them. The status",
+            ),
+            Line::from(
+                "    line counts kept (✓), rejected (✗) and unsorted (?) shots; the unsorted",
+            ),
+            Line::from("    filter shows what is left. q quits and prints a summary."),
+            Line::default(),
+            key("o / O", "open this shot / the directory in RawTherapee"),
+            key("q", "quit"),
+            Line::default(),
+            Line::from(format!(
+                "  {} graphics · last preview decoded in {} · drawn in {}",
+                self.protocol_name,
+                ms(decode),
+                ms(draw)
+            ))
+            .fg(Color::Gray),
+            Line::default(),
+            Line::from("  Any key closes this help.").italic(),
+        ]
     }
 
     fn draw_picture(&mut self, frame: &mut Frame, area: Rect) {
@@ -655,21 +836,15 @@ impl Viewer {
         if self.assessment(index).is_some_and(|a| a.banded) {
             sharpness.push_str("  ≋ light bands");
         }
-        let (picture, job) = match self.app.mode {
-            Mode::Fit => (self.previews.get(&index), Job::Preview(index)),
-            Mode::Zoom { .. } => (self.full.as_ref().map(|(_, p)| p), Job::Full(index)),
-        };
-        let origin = match picture {
-            Some(Ok(picture)) => format!("{:?}", picture.origin),
-            _ => String::new(),
-        };
-        let ms = |duration: Option<&Duration>| {
-            duration.map_or("–".to_owned(), |d| format!("{} ms", d.as_millis()))
-        };
-        let encode = self.shown.as_ref().map(|shown| &shown.elapsed);
         let zoom = match self.app.mode {
-            Mode::Fit => "fit",
-            Mode::Zoom { .. } => "100%",
+            Mode::Fit => "",
+            Mode::Zoom { .. } => "  100%",
+        };
+        let progress = self.progress();
+        let done = if progress.unread == 0 && progress.unsorted == 0 {
+            "  all sorted"
+        } else {
+            ""
         };
         let read = self
             .times
@@ -686,13 +861,13 @@ impl Viewer {
             filter => format!("  [{}]", filter.name()),
         };
         format!(
-            " {}/{}{filter}  {}  {files}  {marks}  {burst}{sharpness}  {zoom} {origin}  decode {} · draw {} · {}{reading}",
+            " {}/{}{filter}  {}  {files}  {marks}  {burst}{sharpness}{zoom}  │  ✓{} ✗{} ?{}{done}{reading}",
             index + 1,
             self.shots.len(),
             shot.stem.to_string_lossy(),
-            ms(self.timings.get(&job)),
-            ms(encode),
-            self.protocol_name,
+            progress.kept,
+            progress.rejected,
+            progress.unsorted,
         )
     }
 
@@ -714,6 +889,26 @@ impl Viewer {
             None => Line::default(),
         }
     }
+}
+
+/// How many shots are kept, rejected and left to cull.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Progress {
+    kept: usize,
+    rejected: usize,
+    unsorted: usize,
+    /// Shots whose marks are not read yet.
+    unread: usize,
+}
+
+/// A line of keys and what they do, the keys standing out.
+fn keys_line(keys: &[(&'static str, &'static str)]) -> Line<'static> {
+    let mut spans = vec![Span::from(" ")];
+    for (key, what) in keys {
+        spans.push(Span::from(*key).bold().fg(Color::Cyan));
+        spans.push(Span::from(format!(" {what}   ")));
+    }
+    Line::from(spans)
 }
 
 fn describe(marks: &Marks) -> String {
@@ -804,6 +999,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     })();
 
     ratatui::restore();
+    println!("{}", viewer.summary());
     result
 }
 
