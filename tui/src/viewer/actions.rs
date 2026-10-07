@@ -2,7 +2,7 @@
 
 use corrode_core::marks::{ColorLabel, Marks};
 use corrode_core::rawtherapee;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::Viewer;
 use crate::app::{Command, MarkChange, Mode, burst_around, next_matching};
@@ -17,6 +17,10 @@ impl Viewer {
             self.help_key(key.code);
             return;
         }
+        // Zoomed, the arrows move around the picture; with Ctrl they
+        // still change shot.
+        let pan = matches!(self.app.mode, Mode::Zoom { .. })
+            && !key.modifiers.contains(KeyModifiers::CONTROL);
         let zoomed = matches!(self.app.mode, Mode::Zoom { .. });
         let command = match key.code {
             KeyCode::Char(c) if rank_key(c).is_some() => {
@@ -51,10 +55,10 @@ impl Viewer {
             KeyCode::Esc if zoomed => Command::ToggleZoom,
             KeyCode::Esc => Command::Quit,
             KeyCode::Char('z') | KeyCode::Enter => Command::ToggleZoom,
-            KeyCode::Left if zoomed => Command::Pan { dx: -1, dy: 0 },
-            KeyCode::Right if zoomed => Command::Pan { dx: 1, dy: 0 },
-            KeyCode::Up if zoomed => Command::Pan { dx: 0, dy: -1 },
-            KeyCode::Down if zoomed => Command::Pan { dx: 0, dy: 1 },
+            KeyCode::Left if pan => Command::Pan { dx: -1, dy: 0 },
+            KeyCode::Right if pan => Command::Pan { dx: 1, dy: 0 },
+            KeyCode::Up if pan => Command::Pan { dx: 0, dy: -1 },
+            KeyCode::Down if pan => Command::Pan { dx: 0, dy: 1 },
             KeyCode::Right | KeyCode::Char('l' | ' ') | KeyCode::PageDown => Command::Next,
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace | KeyCode::PageUp => {
                 Command::Previous
