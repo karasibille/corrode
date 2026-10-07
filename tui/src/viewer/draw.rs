@@ -65,6 +65,7 @@ impl Viewer {
                     ("↑↓", "burst"),
                     ("k", "keep, reject the rest"),
                     ("X", "reject burst"),
+                    ("d", "deband"),
                     ("s", "sharpest"),
                     ("1-5", "rank"),
                     ("x", "reject"),

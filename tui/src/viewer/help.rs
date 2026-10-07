@@ -104,6 +104,13 @@ impl Viewer {
             "There is nothing to save: marks are written as you set them. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots; the unsorted filter shows what is left. q quits and prints a summary.",
         );
 
+        section(&mut lines, "Light bands (≋)");
+        key(
+            &mut lines,
+            "d / D",
+            "remove the light bands of this shot's RAW into a DNG next to it, in the background (D: even when none were found); its sidecar is copied, so the DNG keeps the marks. Restart to see the DNG.",
+        );
+
         section(&mut lines, "Other keys");
         key(
             &mut lines,

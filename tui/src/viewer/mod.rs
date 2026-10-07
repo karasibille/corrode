@@ -221,6 +221,8 @@ impl Viewer {
             Job::Preview(i) => !self.previews.contains_key(&i),
             Job::Full(i) => self.full.as_ref().is_none_or(|(full, _)| *full != i),
             Job::Assess(i) => self.states[i].assessment.is_none(),
+            // Only started by the user, through the loader's pinned jobs.
+            Job::Deband(_) => false,
         });
         self.loader.want(jobs);
     }
@@ -252,6 +254,20 @@ impl Viewer {
                 }
                 Loaded::Assessment { index, assessment } => {
                     self.states[index].assessment = Some(assessment);
+                }
+                Loaded::Debanded { index, result } => {
+                    let stem = self.shots[index].stem.to_string_lossy();
+                    self.message = Some(match result {
+                        Ok((dng, pattern)) => Ok(format!(
+                            "{stem}: bands every {:.0} rows removed (R {:.1}% G {:.1}% B {:.1}%), written to {}; restart to see it",
+                            pattern.period,
+                            100.0 * pattern.amplitude(0),
+                            100.0 * pattern.amplitude(1),
+                            100.0 * pattern.amplitude(2),
+                            dng.file_name().unwrap_or_default().to_string_lossy()
+                        )),
+                        Err(err) => Err(format!("{stem}: {err}")),
+                    });
                 }
                 Loaded::Picture {
                     job,

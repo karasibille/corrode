@@ -30,6 +30,8 @@ impl Viewer {
             KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
             KeyCode::Char('k') => return self.keep_in_burst(),
             KeyCode::Char('X') => return self.reject_burst(),
+            KeyCode::Char('d') => return self.deband(false),
+            KeyCode::Char('D') => return self.deband(true),
             KeyCode::Char('?') => {
                 self.help = true;
                 self.help_scroll = 0;
@@ -135,6 +137,29 @@ impl Viewer {
                 "no {} shot among the {read} read",
                 self.filter.name()
             )),
+        });
+    }
+
+    /// Starts removing the light bands of the current shot into a DNG, in
+    /// the background. Unless forced, only shots found banded are treated.
+    fn deband(&mut self, force: bool) {
+        let index = self.app.index;
+        let shot = &self.shots[index];
+        let stem = shot.stem.to_string_lossy();
+        if shot.raw.is_none() {
+            self.message = Some(Err(format!("{stem}: no RAW file to correct")));
+            return;
+        }
+        let banded = self.states[index].assessment().map(|a| a.banded);
+        self.message = Some(match (banded, force) {
+            (Some(false), false) => Err(format!(
+                "{stem}: no light bands found on its preview; D corrects it anyway"
+            )),
+            (None, false) => Err(format!("{stem}: not assessed yet, try again in a moment")),
+            _ => {
+                self.loader.push(crate::loader::Job::Deband(index));
+                Ok(format!("{stem}: removing light bands in the background…"))
+            }
         });
     }
 

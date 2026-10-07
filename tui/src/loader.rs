@@ -13,11 +13,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corrode_core::cache::Cache as MetaCache;
+use corrode_core::debanding::{self, Pattern};
 use corrode_core::exif::{Exif, Head};
 use corrode_core::marks::Marks;
 use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
 use corrode_core::{banding, rawtherapee, sharpness};
+use std::path::PathBuf;
 
 use crate::culling::Assessment;
 use image::DynamicImage;
@@ -31,6 +33,8 @@ pub enum Job {
     Full(usize),
     /// Sharpness around the focus point, and light bands, from the preview.
     Assess(usize),
+    /// Removes the light bands of the RAW into a DNG next to it.
+    Deband(usize),
 }
 
 pub enum Loaded {
@@ -44,6 +48,11 @@ pub enum Loaded {
         index: usize,
         assessment: Option<Assessment>,
     },
+    Debanded {
+        index: usize,
+        /// The DNG written and what was removed, or why not.
+        result: Result<(PathBuf, Pattern), String>,
+    },
     Picture {
         job: Job,
         picture: Result<Arc<Picture>, String>,
@@ -53,6 +62,8 @@ pub enum Loaded {
 
 #[derive(Default)]
 struct Queue {
+    /// Jobs asked for explicitly, run first and never dropped.
+    pinned: VecDeque<Job>,
     waiting: VecDeque<Job>,
     running: HashSet<Job>,
     closed: bool,
@@ -115,6 +126,17 @@ impl Loader {
         Loader { queue }
     }
 
+    /// Adds a job that must run whatever the viewer asks for next, such as
+    /// a correction the user started.
+    pub fn push(&self, job: Job) {
+        let (lock, wake) = &*self.queue;
+        let mut queue = lock.lock().unwrap();
+        if !queue.running.contains(&job) && !queue.pinned.contains(&job) {
+            queue.pinned.push_back(job);
+        }
+        wake.notify_all();
+    }
+
     /// Replaces the waiting jobs by these ones, in this order. Jobs already
     /// running are not started twice.
     pub fn want(&self, jobs: impl IntoIterator<Item = Job>) {
@@ -145,7 +167,11 @@ fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<Job> {
         if queue.closed {
             return None;
         }
-        if let Some(job) = queue.waiting.pop_front() {
+        if let Some(job) = queue
+            .pinned
+            .pop_front()
+            .or_else(|| queue.waiting.pop_front())
+        {
             queue.running.insert(job);
             return Some(job);
         }
@@ -213,6 +239,22 @@ fn run(shots: &[Shot], cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) 
                 .map(Arc::new)
                 .map_err(|err| err.to_string()),
         ),
+        Job::Deband(index) => {
+            let result = match shot(index).raw.as_deref() {
+                None => Err("this shot has no RAW file".to_owned()),
+                Some(raw) => {
+                    let dng = debanding::output_path(raw);
+                    debanding::to_dng(raw, &dng)
+                        .map_err(|err| err.to_string())
+                        .and_then(|pattern| {
+                            rawtherapee::copy_sidecar(raw, &dng)
+                                .map_err(|err| format!("{}: {err}", dng.display()))?;
+                            Ok((dng, pattern))
+                        })
+                }
+            };
+            Loaded::Debanded { index, result }
+        }
         Job::Assess(index) => {
             let focus = match cache.lock().unwrap().exifs.get(&index) {
                 Some(exif) => exif.focus_point,

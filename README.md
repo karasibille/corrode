@@ -38,6 +38,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | r y g b p | Red, yellow, green, blue, purple label (again to clear) |
 | x, Delete | Reject / restore |
 | f | Filter: all, unsorted (left to cull), kept, rejected |
+| d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it (D: even when none were found) |
 | z, Enter | 100% zoom; arrows then move around |
 | o / O | Open the shot / the directory in RawTherapee |
 | ? | Full help |
@@ -61,6 +62,8 @@ There is nothing to save: marks are written as they are set. The line above the 
 | `bursts` | Groups shots taken in quick succession |
 | `sharpness` | Scores the sharpness of a picture around its focus point |
 | `banding` | Detects the light bands LED lighting leaves with an electronic shutter |
+| `debanding` | Removes those bands from the raw sensor data, per color, by their period |
+| `dng` | Writes a raw image as a DNG with the original's metadata and preview |
 
 ### Trying it
 
@@ -73,6 +76,7 @@ cargo run -p corrode-core --example marks -- set --rank 4 sandbox/P1011259.JPG
 cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/*.JPG
 cargo run --release -p corrode-core --example bursts -- sandbox --list
 cargo run --release -p corrode-core --example sharpness -- sandbox
+cargo run --release -p corrode-core --example deband -- sandbox/banding/109/_1094086.RW2
 ```
 
 `marks set` writes the RawTherapee sidecars of the shots it is given. `picture` saves the decoded pictures in the output directory. Use `--release` for decoding: it is much slower in debug builds.

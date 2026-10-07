@@ -160,6 +160,17 @@ pub fn open(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Copies the sidecar of an image to another image, so that its marks and
+/// settings follow a derived file. Gives whether there was one to copy.
+pub fn copy_sidecar(from: &Path, to: &Path) -> io::Result<bool> {
+    let source = pp3::sidecar_path(from);
+    if !source.is_file() {
+        return Ok(false);
+    }
+    std::fs::copy(source, pp3::sidecar_path(to))?;
+    Ok(true)
+}
+
 /// The file of a shot to open in RawTherapee: its RAW, else its JPEG.
 pub fn file_to_open(shot: &Shot) -> &Path {
     shot.raw
@@ -403,6 +414,20 @@ mod tests {
             config.write_marks(&unmarked, &Marks::default()),
             Err(Error::DynamicProfile)
         ));
+    }
+
+    #[test]
+    fn a_sidecar_follows_a_derived_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("P1011259.RW2");
+        let dng = dir.path().join("P1011259-deband.dng");
+        assert!(!copy_sidecar(&raw, &dng).unwrap());
+        fs::write(pp3::sidecar_path(&raw), "[General]\nRank=3\n").unwrap();
+        assert!(copy_sidecar(&raw, &dng).unwrap());
+        assert_eq!(
+            fs::read_to_string(pp3::sidecar_path(&dng)).unwrap(),
+            "[General]\nRank=3\n"
+        );
     }
 
     #[test]
