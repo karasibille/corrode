@@ -16,8 +16,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use corrode_core::marks::{ColorLabel, MAX_RANK, Marks};
 use corrode_core::pairing::{self, Shot};
-use corrode_core::pp3::{self, ColorLabel, Marks};
 use corrode_core::rawtherapee::{self, Config};
 
 const USAGE: &str = "\
@@ -59,7 +59,7 @@ fn parse_color(name: &str) -> Option<ColorLabel> {
 }
 
 fn describe(marks: &Marks) -> String {
-    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((pp3::MAX_RANK - marks.rank).into());
+    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((MAX_RANK - marks.rank).into());
     let trash = if marks.in_trash { "  rejected" } else { "" };
     format!("{stars}  {:?}{trash}", marks.color)
 }
@@ -124,7 +124,7 @@ fn run(args: Vec<String>) -> Result<bool, String> {
                 changes.rank = Some(
                     rank.parse()
                         .ok()
-                        .filter(|rank| *rank <= pp3::MAX_RANK)
+                        .filter(|rank| *rank <= MAX_RANK)
                         .ok_or(format!("invalid rank: {rank}"))?,
                 );
             }

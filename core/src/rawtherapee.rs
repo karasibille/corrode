@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
+use crate::marks::Marks;
 use crate::pairing::{Kind, Shot};
-use crate::pp3::{self, Marks, Profile};
+use crate::pp3::{self, Profile};
 
 /// Where distribution packages install RawTherapee's bundled profiles,
 /// written `${G}` in its settings.
@@ -228,7 +229,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::pp3::ColorLabel;
+    use crate::marks::ColorLabel;
 
     const RAW_DEFAULT: &str = "[Exposure]\nHistogramMatching=true\n";
     const USER_PROFILE: &str = "[Sharpening]\nEnabled=true\n";

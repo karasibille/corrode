@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use corrode_core::pp3::Marks;
+use corrode_core::marks::Marks;
 
 use crate::app::{Command, Filter, next_matching};
 
@@ -153,7 +153,7 @@ pub fn filtered(
 
 #[cfg(test)]
 mod tests {
-    use corrode_core::pp3::ColorLabel;
+    use corrode_core::marks::ColorLabel;
 
     use super::*;
 

@@ -13,9 +13,7 @@
 //! whole RAW file takes a large part of a second to read.
 
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
-use std::ops::Range;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use image::metadata::Orientation;
@@ -24,8 +22,9 @@ use rawler::decoders::{Decoder, RawDecodeParams};
 use rawler::imgop::develop::RawDevelop;
 use rawler::rawsource::RawSource;
 
-use crate::exif::{self, Head};
-use crate::jpeg;
+use crate::exif::Head;
+use crate::files::{read_head, read_range};
+use crate::formats::{jpeg, rw2, tiff};
 use crate::pairing::{Kind, Shot};
 
 /// Where a picture comes from.
@@ -119,13 +118,9 @@ impl Head {
     pub fn thumbnail(&self) -> Option<DynamicImage> {
         let head = self.data();
         let is_jpeg = self.kind() == Kind::Jpeg;
-        let container = if is_jpeg {
-            head
-        } else {
-            jpeg::rw2_preview(head)?
-        };
+        let container = if is_jpeg { head } else { rw2::preview(head)? };
         let exif = jpeg::exif(container)?;
-        let data = jpeg::exif_thumbnail(exif)?;
+        let data = tiff::exif_thumbnail(exif)?;
         let mut image = image::load_from_memory_with_format(data, ImageFormat::Jpeg).ok()?;
         let orientation = Orientation::from_exif_chunk(exif)
             .filter(|_| is_jpeg)
@@ -146,19 +141,10 @@ fn raw_orientation(head: &[u8]) -> Option<Orientation> {
     Orientation::from_exif(u8::try_from(metadata.exif.orientation?).ok()?)
 }
 
-/// Reads a part of a file.
-fn read_range(path: &Path, range: Range<usize>) -> io::Result<Vec<u8>> {
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(range.start as u64))?;
-    let mut data = Vec::with_capacity(range.len());
-    file.take(range.len() as u64).read_to_end(&mut data)?;
-    Ok(data)
-}
-
 /// The JPEG's embedded preview, reading only the head of the file and the
 /// preview itself; the full image if there is none or it is broken.
 fn jpeg_preview(path: &Path) -> Result<Picture, Error> {
-    let head = exif::read_head(path).map_err(|err| Error::Jpeg {
+    let head = read_head(path).map_err(|err| Error::Jpeg {
         path: path.to_owned(),
         source: err.into(),
     })?;
@@ -178,8 +164,8 @@ fn jpeg_preview(path: &Path) -> Result<Picture, Error> {
 /// the raw data after it. `None` for other files, or if anything fails:
 /// rawler then reads the whole file.
 fn rw2_preview(path: &Path) -> Option<Picture> {
-    let head = exif::read_head(path).ok()?;
-    let range = jpeg::rw2_preview_range(&head)?;
+    let head = read_head(path).ok()?;
+    let range = rw2::preview_range(&head)?;
     let data = match head.get(range.clone()) {
         Some(data) => data.to_vec(),
         None => read_range(path, range).ok()?,
@@ -310,7 +296,10 @@ mod tests {
     use image::{ExtendedColorType, ImageEncoder, Rgb, RgbImage};
 
     use super::*;
-    use crate::jpeg::tests::{encode, exif_orientation, exif_with_thumbnail, with_mpf_preview};
+    use crate::formats::rw2::tests::with_preview;
+    use crate::formats::testing::{
+        encode, exif_orientation, exif_with_thumbnail, with_mpf_preview,
+    };
 
     fn shot(jpeg: Option<PathBuf>, raw: Option<PathBuf>) -> Shot {
         Shot {
@@ -382,17 +371,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("P1011259.RW2");
         let embedded = encode(32, 24, None);
-        // RW2 header, IFD at 8 with the JpgFromRaw tag, preview at 26,
-        // then what stands for the raw data.
-        let mut rw2 = b"IIU\0".to_vec();
-        rw2.extend(8u32.to_le_bytes());
-        rw2.extend(1u16.to_le_bytes());
-        rw2.extend(0x002eu16.to_le_bytes());
-        rw2.extend(7u16.to_le_bytes());
-        rw2.extend((embedded.len() as u32).to_le_bytes());
-        rw2.extend(26u32.to_le_bytes());
-        rw2.extend(0u32.to_le_bytes());
-        rw2.extend(&embedded);
+        let mut rw2 = with_preview(&embedded);
+        // What stands for the raw data after the preview.
         rw2.extend(vec![0; 1000]);
         fs::write(&path, rw2).unwrap();
 

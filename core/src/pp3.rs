@@ -11,49 +11,12 @@ use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::marks::{ColorLabel, MAX_RANK, Marks};
+
 const GENERAL: &str = "General";
 const RANK: &str = "Rank";
 const COLOR_LABEL: &str = "ColorLabel";
 const IN_TRASH: &str = "InTrash";
-
-/// Highest star rating RawTherapee knows.
-pub const MAX_RANK: u8 = 5;
-
-/// Color label, numbered as in RawTherapee.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ColorLabel {
-    #[default]
-    None = 0,
-    Red = 1,
-    Yellow = 2,
-    Green = 3,
-    Blue = 4,
-    Purple = 5,
-}
-
-impl ColorLabel {
-    fn from_number(n: u8) -> Option<ColorLabel> {
-        match n {
-            0 => Some(ColorLabel::None),
-            1 => Some(ColorLabel::Red),
-            2 => Some(ColorLabel::Yellow),
-            3 => Some(ColorLabel::Green),
-            4 => Some(ColorLabel::Blue),
-            5 => Some(ColorLabel::Purple),
-            _ => None,
-        }
-    }
-}
-
-/// The marks corrode reads and writes. A missing key means its default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Marks {
-    /// Star rating, from 0 (unrated) to [`MAX_RANK`].
-    pub rank: u8,
-    pub color: ColorLabel,
-    /// Rejected photo, shown in RawTherapee's trash.
-    pub in_trash: bool,
-}
 
 #[derive(Debug)]
 pub enum Error {

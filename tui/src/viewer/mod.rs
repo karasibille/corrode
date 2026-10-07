@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use corrode_core::bursts;
 use corrode_core::exif::Exif;
+use corrode_core::marks::Marks;
 use corrode_core::pairing::Shot;
 use corrode_core::picture::Picture;
-use corrode_core::pp3::Marks;
 use corrode_core::rawtherapee::Config;
 use image::DynamicImage;
 use ratatui::layout::Size;

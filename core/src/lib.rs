@@ -2,8 +2,11 @@
 
 pub mod banding;
 pub mod bursts;
+pub mod cameras;
 pub mod exif;
-pub mod jpeg;
+mod files;
+pub mod formats;
+pub mod marks;
 pub mod pairing;
 pub mod picture;
 pub mod pp3;

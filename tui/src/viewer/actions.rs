@@ -1,6 +1,6 @@
 //! What the keys do: browsing, marks, bursts, filters, RawTherapee.
 
-use corrode_core::pp3::{ColorLabel, Marks};
+use corrode_core::marks::{ColorLabel, Marks};
 use corrode_core::rawtherapee;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 

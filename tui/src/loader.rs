@@ -13,9 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corrode_core::exif::{Exif, Head};
+use corrode_core::marks::Marks;
 use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
-use corrode_core::pp3::Marks;
 use corrode_core::{banding, rawtherapee, sharpness};
 
 use crate::culling::Assessment;

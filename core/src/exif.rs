@@ -6,8 +6,7 @@
 //! read, where the metadata is: a whole shoot can be read in a moment.
 
 use std::fmt;
-use std::fs::File;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 
 use image::metadata::Orientation;
@@ -17,7 +16,9 @@ use rawler::formats::tiff::{GenericTiffReader, IFD, Rational};
 use rawler::rawsource::RawSource;
 use rawler::tags::TiffCommonTag;
 
-use crate::jpeg;
+use crate::cameras::panasonic;
+use crate::files::read_head;
+use crate::formats::{jpeg, rw2};
 use crate::pairing::{Kind, Shot};
 
 /// Shooting information; any of it may be missing from a file.
@@ -112,17 +113,6 @@ pub fn read(shot: &Shot) -> Result<Exif, Error> {
     Head::read(shot)?.exif()
 }
 
-/// How much of a file is read for its metadata: a RW2 has it in its first
-/// 64 KB, a JPEG in a segment of at most 64 KB near the start.
-const HEAD: usize = 256 * 1024;
-
-/// The first bytes of a file, where its metadata is.
-pub(crate) fn read_head(path: &Path) -> io::Result<Vec<u8>> {
-    let mut data = Vec::with_capacity(HEAD);
-    File::open(path)?.take(HEAD as u64).read_to_end(&mut data)?;
-    Ok(data)
-}
-
 /// The head of a shot's file, read once for everything it holds: the
 /// shooting information, and the thumbnail (see `picture`). The RAW is
 /// read when the shot has one, else the JPEG.
@@ -199,10 +189,9 @@ fn read_raw(path: &Path, head: &[u8]) -> Result<Exif, Error> {
         .or_else(|| metadata.exif.lens_model.clone());
     // The maker notes are in the EXIF data of the embedded preview.
     let orientation = metadata.exif.orientation.unwrap_or(1);
-    exif.focus_point = jpeg::rw2_preview(head)
+    exif.focus_point = rw2::preview(head)
         .and_then(jpeg::exif)
-        .and_then(jpeg::panasonic_af_point)
-        .map(|point| upright_point(point, orientation));
+        .and_then(|exif| panasonic::focus_point(exif, orientation));
     Ok(exif)
 }
 
@@ -212,22 +201,8 @@ fn read_jpeg(head: &[u8]) -> Exif {
     };
     let mut exif = parse_tiff(tiff).unwrap_or_default();
     let orientation = Orientation::from_exif_chunk(tiff).map_or(1, |o| u16::from(o.to_exif()));
-    exif.focus_point =
-        jpeg::panasonic_af_point(tiff).map(|point| upright_point(point, orientation));
+    exif.focus_point = panasonic::focus_point(tiff, orientation);
     exif
-}
-
-/// Turns an autofocus point recorded in the sensor's frame into the frame
-/// of the upright picture. Established on photos of a Panasonic GX9 with
-/// a plain subject: for shots held vertically, the point turns the other
-/// way from the picture, as if seen from the back of the sensor.
-fn upright_point((x, y): (f32, f32), orientation: u16) -> (f32, f32) {
-    match orientation {
-        3 => (1.0 - x, 1.0 - y),
-        6 => (y, 1.0 - x),
-        8 => (1.0 - y, x),
-        _ => (x, y),
-    }
 }
 
 /// Parses EXIF data stored as a TIFF structure, as in a JPEG's APP1 segment.
@@ -330,22 +305,14 @@ mod tests {
     use std::fs;
 
     use super::*;
-
-    #[test]
-    fn focus_points_follow_the_picture_upright() {
-        let point = (0.35, 0.56);
-        assert_eq!(upright_point(point, 1), (0.35, 0.56));
-        assert_eq!(upright_point(point, 3), (0.65, 1.0 - 0.56));
-        assert_eq!(upright_point(point, 6), (0.56, 0.65));
-        assert_eq!(upright_point(point, 8), (1.0 - 0.56, 0.35));
-    }
+    use crate::formats::testing;
 
     #[test]
     fn reads_the_focus_point_of_a_jpeg() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("P1011261.JPG");
-        let exif = jpeg::tests::exif_with_af_point((128, 256), (64, 256));
-        fs::write(&path, jpeg::tests::encode(16, 8, Some(exif))).unwrap();
+        let exif = testing::exif_with_af_point((128, 256), (64, 256));
+        fs::write(&path, testing::encode(16, 8, Some(exif))).unwrap();
         let shot = Shot {
             stem: "P1011261".into(),
             jpeg: Some(path),
@@ -503,7 +470,7 @@ mod tests {
     fn reads_a_jpeg_only_shot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("P1011261.JPG");
-        fs::write(&path, jpeg::tests::encode(16, 8, Some(camera_exif()))).unwrap();
+        fs::write(&path, testing::encode(16, 8, Some(camera_exif()))).unwrap();
         let shot = Shot {
             stem: "P1011261".into(),
             jpeg: Some(path),
@@ -532,7 +499,7 @@ mod tests {
     fn a_jpeg_without_exif_gives_empty_information() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plain.JPG");
-        fs::write(&path, jpeg::tests::encode(16, 8, None)).unwrap();
+        fs::write(&path, testing::encode(16, 8, None)).unwrap();
         let shot = Shot {
             stem: "plain".into(),
             jpeg: Some(path),

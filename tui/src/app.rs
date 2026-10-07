@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use corrode_core::pp3::{ColorLabel, Marks};
+use corrode_core::marks::{ColorLabel, Marks};
 
 /// What is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

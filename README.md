@@ -50,13 +50,16 @@ There is nothing to save: marks are written as they are set. The line above the 
 | Module | What it does |
 |---|---|
 | `pairing` | Groups the JPEG and RAW files of a directory into shots, by base name |
+| `marks` | The rating, color label and rejection culling sets on a shot |
 | `pp3` | Reads and writes the marks of a RawTherapee sidecar, keeping every other byte |
-| `rawtherapee` | Reads RawTherapee's settings, picks a shot's sidecar and creates it from the default profile |
+| `rawtherapee` | Reads RawTherapee's settings, picks a shot's sidecar, creates it from the default profile, opens RawTherapee |
+| `exif` | Date to the millisecond, exposure, aperture, ISO, focal length, camera, lens and focus point, from the head of a file |
 | `picture` | Decodes a shot upright: its thumbnail, the preview embedded in the JPEG or the RAW, or the full image |
-| `jpeg` | Finds the EXIF data, thumbnail, previews and focus point in a JPEG or RW2 without decoding it |
-| `exif` | Date to the millisecond, exposure, aperture, ISO, focal length, camera, lens and focus point |
+| `formats` | What a TIFF structure, a JPEG and a RW2 file hold and where, without decoding |
+| `cameras` | What is specific to a make: the Panasonic focus point and its orientation quirk |
 | `bursts` | Groups shots taken in quick succession |
 | `sharpness` | Scores the sharpness of a picture around its focus point |
+| `banding` | Detects the light bands LED lighting leaves with an electronic shutter |
 
 ### Trying it
 

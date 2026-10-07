@@ -9,8 +9,8 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use corrode_core::marks::{MAX_RANK, Marks};
 use corrode_core::pairing::{self, Shot};
-use corrode_core::pp3::{self, Marks};
 use corrode_core::{exif, rawtherapee};
 
 fn files(shot: &Shot) -> String {
@@ -24,7 +24,7 @@ fn files(shot: &Shot) -> String {
 }
 
 fn marks(marks: &Marks) -> String {
-    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((pp3::MAX_RANK - marks.rank).into());
+    let stars = "★".repeat(marks.rank.into()) + &"☆".repeat((MAX_RANK - marks.rank).into());
     let trash = if marks.in_trash { " rejected" } else { "" };
     format!("{stars} {:?}{trash}", marks.color)
 }
