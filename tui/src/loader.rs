@@ -15,6 +15,8 @@ use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
 use corrode_core::pp3::Marks;
 use corrode_core::{banding, rawtherapee, sharpness};
+
+use crate::culling::Assessment;
 use image::DynamicImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,14 +28,6 @@ pub enum Job {
     Full(usize),
     /// Sharpness around the focus point, and light bands, from the preview.
     Assess(usize),
-}
-
-/// What the preview of a shot tells about its quality.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Assessment {
-    pub sharpness: f32,
-    /// Whether LED lighting left light bands on it.
-    pub banded: bool,
 }
 
 pub enum Loaded {
