@@ -25,7 +25,7 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 cargo run --release -p corrode-tui -- path/to/shoot
 ```
 
-corrode shows the shots of a directory one at a time, with a strip of the burst the current one belongs to: shots taken less than 300 ms apart. Under each thumbnail are its marks, and ◆ points out the sharpest frame of the burst, measured around the camera's focus point. Marks are written to the RawTherapee sidecars as soon as they are set.
+corrode shows the shots of a directory one at a time, with the shot's marks and settings on top and a strip of the burst it belongs to below: shots taken less than 300 ms apart. Under each thumbnail are its marks, and ◆ points out the sharpest frame of the burst, measured around the camera's focus point. Marks are written to the RawTherapee sidecars as soon as they are set.
 
 | Key | Action |
 |---|---|
@@ -43,7 +43,7 @@ corrode shows the shots of a directory one at a time, with a strip of the burst 
 | ? | Full help |
 | Esc, q | Leave the zoom / quit |
 
-There is nothing to save: marks are written as they are set. The status line counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute.
+There is nothing to save: marks are written as they are set. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute.
 
 ## Core library
 

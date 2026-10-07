@@ -587,10 +587,18 @@ impl Viewer {
             frame.render_widget(help, area);
             return;
         }
-        let [image_area, strip_area, status_area, info_area, help_area] = Layout::vertical([
+        let [
+            photo_area,
+            shooting_area,
+            image_area,
+            strip_area,
+            progress_area,
+            help_area,
+        ] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(THUMB_ROWS + 1),
-            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -604,10 +612,17 @@ impl Viewer {
         self.draw_strip(frame, strip_area);
 
         frame.render_widget(
-            Paragraph::new(self.status_line(status_area.width)).style(Style::new().reversed()),
-            status_area,
+            Paragraph::new(self.photo_line(photo_area.width)),
+            photo_area,
         );
-        frame.render_widget(Paragraph::new(self.info_line()), info_area);
+        frame.render_widget(
+            Paragraph::new(self.shooting_line(shooting_area.width)),
+            shooting_area,
+        );
+        frame.render_widget(
+            Paragraph::new(self.progress_line(progress_area.width)),
+            progress_area,
+        );
         let help = match &self.message {
             Some(Ok(message)) => Line::from(format!(" {message}")).fg(Color::Green),
             Some(Err(message)) => Line::from(format!(" {message}")).fg(Color::Red),
@@ -723,7 +738,7 @@ impl Viewer {
         section(&mut lines, "Done?");
         text(
             &mut lines,
-            "There is nothing to save: marks are written as you set them. The status line counts kept (✓), rejected (✗) and unsorted (?) shots; the unsorted filter shows what is left. q quits and prints a summary.",
+            "There is nothing to save: marks are written as you set them. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots; the unsorted filter shows what is left. q quits and prints a summary.",
         );
 
         section(&mut lines, "Other keys");
@@ -866,9 +881,78 @@ impl Viewer {
         }
     }
 
-    /// The status line, as much of it as fits in `width` columns: the
-    /// least useful parts go first on a narrow terminal.
-    fn status_line(&self, width: u16) -> String {
+    /// What changes from one photo to the next and matters for culling:
+    /// position, name, marks, place in the burst, sharpness, light bands.
+    fn photo_line(&self, width: u16) -> Line<'static> {
+        let index = self.app.index;
+        let shot = &self.shots[index];
+        let span = |text: String| vec![Span::from(text)];
+        let mut parts: Vec<(u8, Vec<Span<'static>>)> = vec![
+            (1, span(format!("{}/{}", index + 1, self.shots.len()))),
+            (
+                1,
+                vec![Span::from(shot.stem.to_string_lossy().into_owned()).bold()],
+            ),
+        ];
+        match self.marks.get(&index) {
+            Some(Ok(marks)) => {
+                let stars = "★".repeat(marks.rank.into())
+                    + &"☆".repeat((pp3::MAX_RANK - marks.rank).into());
+                parts.push((1, vec![Span::from(stars).fg(Color::Yellow)]));
+                if marks.color != ColorLabel::None {
+                    let color = label_color(marks.color);
+                    parts.push((
+                        2,
+                        vec![Span::from(format!("{:?}", marks.color)).fg(color).bold()],
+                    ));
+                }
+                if marks.in_trash {
+                    parts.push((1, vec![Span::from("✗ rejected").fg(Color::Red).bold()]));
+                }
+            }
+            Some(Err(_)) => parts.push((1, vec![Span::from("unreadable sidecar").fg(Color::Red)])),
+            None => {}
+        }
+        let (burst, complete) = self.burst();
+        parts.push((
+            3,
+            span(format!(
+                "burst {}/{}{}",
+                index - burst.start + 1,
+                burst.len(),
+                if complete { "" } else { "+" }
+            )),
+        ));
+        let best = self.sharpest();
+        let best_score = best
+            .and_then(|best| self.assessment(best))
+            .map(|a| a.sharpness);
+        match (self.assessment(index), best_score) {
+            _ if best == Some(index) => parts.push((2, vec![Span::from("◆ sharpest").bold()])),
+            (Some(current), Some(best)) if best > 0.0 => parts.push((
+                2,
+                span(format!(
+                    "sharpness {:.0}%",
+                    100.0 * current.sharpness / best
+                )),
+            )),
+            _ => {}
+        }
+        if self.assessment(index).is_some_and(|a| a.banded) {
+            parts.push((
+                1,
+                vec![Span::from("≋ light bands").fg(Color::Magenta).bold()],
+            ));
+        }
+        if matches!(self.app.mode, Mode::Zoom { .. }) {
+            parts.push((1, vec![Span::from("100%").bold()]));
+        }
+        fit(&parts, usize::from(width))
+    }
+
+    /// How the photo was taken: the settings that change from shot to shot
+    /// stand out, the date, files, camera and lens follow.
+    fn shooting_line(&self, width: u16) -> Line<'static> {
         let index = self.app.index;
         let shot = &self.shots[index];
         let files = [&shot.jpeg, &shot.raw]
@@ -878,98 +962,84 @@ impl Viewer {
             .map(|ext| ext.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("+");
-        let marks = match self.marks.get(&index) {
-            Some(Ok(marks)) => describe(marks),
-            Some(Err(_)) => "unreadable sidecar".to_owned(),
-            None => String::new(),
-        };
-        let (burst, complete) = self.burst();
-        let burst = format!(
-            "burst {}/{}{}",
-            index - burst.start + 1,
-            burst.len(),
-            if complete { "" } else { "+" }
-        );
-        let best = self
-            .sharpest()
-            .and_then(|best| self.assessment(best))
-            .map(|best| best.sharpness);
-        let sharpness = match (self.assessment(index), best) {
-            (Some(current), Some(best)) if best > 0.0 => {
-                format!("sharpness {:.0}%", 100.0 * current.sharpness / best)
+        let mut parts: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
+        match self.exifs.get(&index) {
+            Some(Ok(exif)) => {
+                let settings = exif.to_string();
+                if !settings.is_empty() {
+                    parts.push((1, vec![Span::from(settings).bold()]));
+                }
+                if let Some(taken) = &exif.taken {
+                    parts.push((2, vec![Span::from(taken.clone())]));
+                }
+                parts.push((3, vec![Span::from(files)]));
+                if let Some(camera) = &exif.camera {
+                    parts.push((5, vec![Span::from(camera.clone())]));
+                }
+                if let Some(lens) = &exif.lens {
+                    parts.push((4, vec![Span::from(lens.clone())]));
+                }
             }
-            _ => String::new(),
-        };
-        let bands = if self.assessment(index).is_some_and(|a| a.banded) {
-            "≋ light bands"
-        } else {
-            ""
-        };
-        let zoom = match self.app.mode {
-            Mode::Fit => "",
-            Mode::Zoom { .. } => "100%",
-        };
+            Some(Err(err)) => {
+                parts.push((1, vec![Span::from(format!("exif: {err}")).fg(Color::Red)]))
+            }
+            None => parts.push((3, vec![Span::from(files)])),
+        }
+        fit(&parts, usize::from(width))
+    }
+
+    /// How far culling has gone, for the whole directory.
+    fn progress_line(&self, width: u16) -> Line<'static> {
         let progress = self.progress();
-        let done = if progress.unread == 0 && progress.unsorted == 0 {
-            "all sorted"
-        } else {
-            ""
-        };
+        let mut parts: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
+        if self.filter != Filter::All {
+            parts.push((
+                1,
+                vec![Span::from(format!("[{}]", self.filter.name())).bold()],
+            ));
+        }
+        parts.push((
+            1,
+            vec![
+                Span::from(format!("✓{}", progress.kept))
+                    .fg(Color::Green)
+                    .bold(),
+                Span::from(" kept"),
+            ],
+        ));
+        parts.push((
+            1,
+            vec![
+                Span::from(format!("✗{}", progress.rejected))
+                    .fg(Color::Red)
+                    .bold(),
+                Span::from(" rejected"),
+            ],
+        ));
+        parts.push((
+            1,
+            vec![
+                Span::from(format!("?{}", progress.unsorted))
+                    .fg(Color::Yellow)
+                    .bold(),
+                Span::from(" to sort"),
+            ],
+        ));
+        if progress.unread == 0 && progress.unsorted == 0 {
+            parts.push((1, vec![Span::from("all sorted").fg(Color::Green).bold()]));
+        }
         let read = self
             .times
             .iter()
             .filter(|&&time| time != Time::Unknown)
             .count();
-        let reading = if read < self.shots.len() {
-            format!("reading {read}/{}", self.shots.len())
-        } else {
-            String::new()
-        };
-        let filter = match self.filter {
-            Filter::All => String::new(),
-            filter => format!("[{}]", filter.name()),
-        };
-        // (priority, text): 1 is kept the longest.
-        let parts = [
-            (1, format!("{}/{}", index + 1, self.shots.len())),
-            (1, filter),
-            (2, shot.stem.to_string_lossy().into_owned()),
-            (5, files),
-            (2, marks),
-            (3, burst),
-            (3, sharpness),
-            (2, bands.to_owned()),
-            (1, zoom.to_owned()),
-            (
-                1,
-                format!(
-                    "│ ✓{} ✗{} ?{}",
-                    progress.kept, progress.rejected, progress.unsorted
-                ),
-            ),
-            (1, done.to_owned()),
-            (4, reading),
-        ];
-        fit(&parts, usize::from(width))
-    }
-
-    fn info_line(&self) -> Line<'static> {
-        match self.exifs.get(&self.app.index) {
-            Some(Ok(exif)) => {
-                let parts = [
-                    exif.taken.clone(),
-                    exif.camera.clone(),
-                    exif.lens.clone(),
-                    Some(exif.to_string()).filter(|s| !s.is_empty()),
-                ];
-                Line::from(format!(
-                    " {}",
-                    parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")
-                ))
-            }
-            Some(Err(err)) => Line::from(format!(" exif: {err}")).fg(Color::Red),
-            None => Line::default(),
+        if read < self.shots.len() {
+            parts.push((
+                2,
+                vec![Span::from(format!("reading {read}/{}", self.shots.len()))],
+            ));
         }
+        fit(&parts, usize::from(width))
     }
 }
 
@@ -1012,16 +1082,23 @@ fn keys_line(keys: &[(&'static str, &'static str)], width: u16) -> Line<'static>
     Line::from(spans)
 }
 
-/// Joins the non-empty parts with two spaces, dropping the least important
-/// ones (highest priority number, last first) until the text fits in
-/// `width` columns.
-fn fit(parts: &[(u8, String)], width: usize) -> String {
-    let mut kept: Vec<&(u8, String)> = parts.iter().filter(|(_, text)| !text.is_empty()).collect();
-    let join = |kept: &[&(u8, String)]| {
-        let texts: Vec<&str> = kept.iter().map(|(_, text)| text.as_str()).collect();
-        format!(" {}", texts.join("  "))
+/// Joins the parts with two spaces, dropping the least important ones
+/// (highest priority number, last first) until the line fits in `width`
+/// columns. Parts of priority 1 always stay.
+fn fit(parts: &[(u8, Vec<Span<'static>>)], width: usize) -> Line<'static> {
+    let part_width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
+    let mut kept: Vec<&(u8, Vec<Span<'static>>)> = parts
+        .iter()
+        .filter(|(_, spans)| part_width(spans) > 0)
+        .collect();
+    let line_width = |kept: &[&(u8, Vec<Span<'static>>)]| {
+        1 + kept
+            .iter()
+            .map(|(_, spans)| part_width(spans))
+            .sum::<usize>()
+            + 2 * kept.len().saturating_sub(1)
     };
-    while Span::from(join(&kept)).width() > width {
+    while line_width(&kept) > width {
         let Some(least) = kept
             .iter()
             .enumerate()
@@ -1035,7 +1112,26 @@ fn fit(parts: &[(u8, String)], width: usize) -> String {
         }
         kept.remove(least);
     }
-    join(&kept)
+    let mut spans = vec![Span::from(" ")];
+    for (position, (_, part)) in kept.iter().enumerate() {
+        if position > 0 {
+            spans.push(Span::from("  "));
+        }
+        spans.extend(part.iter().cloned());
+    }
+    Line::from(spans)
+}
+
+/// The terminal color of a label.
+fn label_color(label: ColorLabel) -> Color {
+    match label {
+        ColorLabel::None => Color::Reset,
+        ColorLabel::Red => Color::Red,
+        ColorLabel::Yellow => Color::Yellow,
+        ColorLabel::Green => Color::Green,
+        ColorLabel::Blue => Color::Blue,
+        ColorLabel::Purple => Color::Magenta,
+    }
 }
 
 fn describe(marks: &Marks) -> String {
@@ -1154,18 +1250,20 @@ mod tests {
 
     #[test]
     fn the_least_important_parts_go_first() {
+        let part = |priority, text: &str| (priority, vec![Span::from(text.to_owned())]);
         let parts = [
-            (1, "12/653".to_owned()),
-            (3, "burst 2/6".to_owned()),
-            (2, "P1011259".to_owned()),
-            (1, String::new()),
-            (1, "│ ✓1 ✗2 ?3".to_owned()),
+            part(1, "12/653"),
+            part(3, "burst 2/6"),
+            part(2, "P1011259"),
+            part(1, ""),
+            part(1, "│ ✓1 ✗2 ?3"),
         ];
-        assert_eq!(fit(&parts, 80), " 12/653  burst 2/6  P1011259  │ ✓1 ✗2 ?3");
-        assert_eq!(fit(&parts, 32), " 12/653  P1011259  │ ✓1 ✗2 ?3");
-        assert_eq!(fit(&parts, 20), " 12/653  │ ✓1 ✗2 ?3");
+        let text = |width| fit(&parts, width).to_string();
+        assert_eq!(text(80), " 12/653  burst 2/6  P1011259  │ ✓1 ✗2 ?3");
+        assert_eq!(text(32), " 12/653  P1011259  │ ✓1 ✗2 ?3");
+        assert_eq!(text(20), " 12/653  │ ✓1 ✗2 ?3");
         // The essentials stay even when they do not fit.
-        assert_eq!(fit(&parts, 5), " 12/653  │ ✓1 ✗2 ?3");
+        assert_eq!(text(5), " 12/653  │ ✓1 ✗2 ?3");
     }
 
     #[test]
