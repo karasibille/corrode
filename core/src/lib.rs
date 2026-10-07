@@ -4,6 +4,8 @@ pub mod banding;
 pub mod bursts;
 pub mod cache;
 pub mod cameras;
+pub mod debanding;
+pub mod dng;
 pub mod exif;
 mod files;
 pub mod formats;
