@@ -6,6 +6,7 @@
 
 mod glitch;
 mod jpeg;
+mod print;
 mod random;
 mod recipe;
 mod sort;
@@ -15,6 +16,7 @@ pub use glitch::{
     slice_shift,
 };
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
+pub use print::{Color, Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, Recipe};
 pub use sort::{Direction, PixelSort, pixel_sort};
 

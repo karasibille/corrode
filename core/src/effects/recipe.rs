@@ -24,6 +24,7 @@ use super::glitch::{
     ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
 };
 use super::jpeg::{Databend, GenerationLoss, databend, generation_loss};
+use super::print::{Dither, Duotone, Scanlines, dither, duotone, scanlines};
 use super::sort::{PixelSort, pixel_sort};
 
 /// One effect with its parameters.
@@ -35,10 +36,23 @@ pub enum Effect {
     SliceShift(SliceShift),
     PixelStretch(PixelStretch),
     ChannelSplit(ChannelSplit),
+    Dither(Dither),
+    Duotone(Duotone),
+    Scanlines(Scanlines),
 }
 
 /// The names of the effects, as written in a recipe.
-pub const NAMES: [&str; 6] = ["loss", "bend", "sort", "slice", "stretch", "split"];
+pub const NAMES: [&str; 9] = [
+    "loss",
+    "bend",
+    "sort",
+    "slice",
+    "stretch",
+    "split",
+    "dither",
+    "duotone",
+    "scanlines",
+];
 
 impl Effect {
     pub fn name(&self) -> &'static str {
@@ -49,6 +63,9 @@ impl Effect {
             Effect::SliceShift(_) => "slice",
             Effect::PixelStretch(_) => "stretch",
             Effect::ChannelSplit(_) => "split",
+            Effect::Dither(_) => "dither",
+            Effect::Duotone(_) => "duotone",
+            Effect::Scanlines(_) => "scanlines",
         }
     }
 
@@ -61,6 +78,9 @@ impl Effect {
             Effect::SliceShift(params) => slice_shift(image, params, seed),
             Effect::PixelStretch(params) => pixel_stretch(image, params, seed),
             Effect::ChannelSplit(params) => channel_split(image, params),
+            Effect::Dither(params) => dither(image, params),
+            Effect::Duotone(params) => duotone(image, params),
+            Effect::Scanlines(params) => scanlines(image, params),
         })
     }
 
@@ -119,6 +139,29 @@ impl Effect {
                     blue: params.pair("blue", d.blue)?,
                 })
             }
+            "dither" => {
+                let d = Dither::default();
+                Effect::Dither(Dither {
+                    method: params.get("method", d.method)?,
+                    size: params.get("size", d.size)?,
+                    mid: params.get("mid", d.mid)?,
+                })
+            }
+            "duotone" => {
+                let d = Duotone::default();
+                Effect::Duotone(Duotone {
+                    dark: params.get("dark", d.dark)?,
+                    light: params.get("light", d.light)?,
+                })
+            }
+            "scanlines" => {
+                let d = Scanlines::default();
+                Effect::Scanlines(Scanlines {
+                    period: params.get("period", d.period)?,
+                    thickness: params.get("thickness", d.thickness)?,
+                    strength: params.get("strength", d.strength)?,
+                })
+            }
             other => return Err(Error::UnknownEffect(other.to_owned())),
         };
         params.finish()?;
@@ -166,6 +209,17 @@ impl fmt::Display for Effect {
                 pair(p.red),
                 pair(p.green),
                 pair(p.blue)
+            ),
+            Effect::Dither(p) => write!(
+                f,
+                "dither method={} size={} mid={}",
+                p.method, p.size, p.mid
+            ),
+            Effect::Duotone(p) => write!(f, "duotone dark={} light={}", p.dark, p.light),
+            Effect::Scanlines(p) => write!(
+                f,
+                "scanlines period={} thickness={} strength={}",
+                p.period, p.thickness, p.strength
             ),
         }
     }

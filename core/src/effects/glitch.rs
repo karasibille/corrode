@@ -18,7 +18,7 @@ fn scale_of(image: &RgbImage) -> f32 {
     image.width() as f32 / REFERENCE_WIDTH as f32
 }
 
-fn scaled(size: u32, scale: f32) -> u32 {
+pub(super) fn scaled(size: u32, scale: f32) -> u32 {
     (size as f32 * scale).round() as u32
 }
 

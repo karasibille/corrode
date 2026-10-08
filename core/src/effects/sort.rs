@@ -110,7 +110,7 @@ pub fn pixel_sort(image: &RgbImage, params: PixelSort) -> RgbImage {
 }
 
 /// Perceived brightness of a pixel, 0 to 255.
-fn brightness(pixel: Rgb<u8>) -> u8 {
+pub(super) fn brightness(pixel: Rgb<u8>) -> u8 {
     let [r, g, b] = pixel.0;
     ((299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) / 1000) as u8
 }
