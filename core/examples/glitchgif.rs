@@ -170,6 +170,9 @@ fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
             }),
         )
         .map_err(|err| format!("{}: {err}", output.display()))?;
+    // The encoder writes through a buffer: closing it writes the end of
+    // the file, which must be there before the GIF is shown.
+    drop(encoder);
     println!(
         "{recipe}\n  {count} frames of {}×{} at {} fps in {:.1} s -> {}",
         image.width(),
