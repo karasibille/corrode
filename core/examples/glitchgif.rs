@@ -12,13 +12,14 @@
 //! so that the loop does not jump), `jitter` (true: the seed moves on
 //! at each frame), `easing` (how the ranges move: `smooth`, slow at
 //! both ends, `in`, slow at the start, `out`, slow at the end, or
-//! `linear`).
+//! `linear`), `show` (true: plays the GIF in the terminal once saved,
+//! with kitty's icat).
 
 use std::env;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Instant;
 
 use corrode_core::effects::{NAMES, Recipe};
@@ -34,6 +35,7 @@ struct Options {
     boomerang: bool,
     jitter: bool,
     easing: Easing,
+    show: bool,
 }
 
 /// How the ranges of a recipe move over the animation.
@@ -80,6 +82,7 @@ fn options(words: &[String]) -> Result<(Options, Vec<String>), String> {
         boomerang: true,
         jitter: true,
         easing: Easing::Smooth,
+        show: false,
     };
     let mut recipe = Vec::with_capacity(words.len());
     let mut before_effects = true;
@@ -101,6 +104,7 @@ fn options(words: &[String]) -> Result<(Options, Vec<String>), String> {
             "boomerang" => options.boomerang = value.parse().map_err(|_| bad())?,
             "jitter" => options.jitter = value.parse().map_err(|_| bad())?,
             "easing" => options.easing = Easing::parse(value).ok_or_else(bad)?,
+            "show" => options.show = value.parse().map_err(|_| bad())?,
             // The recipe's own.
             _ => recipe.push(word.clone()),
         }
@@ -174,6 +178,17 @@ fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
         elapsed.as_secs_f64(),
         output.display()
     );
+    if options.show {
+        // Plays the animation; chafa would show only the first frame.
+        let shown = Command::new("kitten")
+            .args(["icat", "--align", "left"])
+            .arg(output)
+            .status()
+            .is_ok_and(|status| status.success());
+        if !shown {
+            eprintln!("cannot show {}: kitten icat did not work", output.display());
+        }
+    }
     Ok(())
 }
 

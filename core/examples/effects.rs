@@ -7,19 +7,45 @@
 //!
 //! Effects: loss (generation loss), bend (databending), sort (pixel
 //! sorting), slice (slice shift), stretch (pixel stretch), split (channel
-//! split); `name=value` sets a parameter, the rest take their defaults.
+//! split), dither, duotone, scanlines; `name=value` sets a parameter,
+//! the rest take their defaults. `show=true` before the recipe shows
+//! the result in the terminal once saved (kitty, else chafa).
 //! The picture is the shot's full-size image (JPEG, else developed RAW).
 //! Use `--release`: effects go through the whole picture many times.
 
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Instant;
 
 use corrode_core::effects::{NAMES, Recipe};
 use corrode_core::{pairing, picture};
 
+/// Shows a picture in the terminal with kitty's icat, else chafa.
+pub fn show(path: &Path) {
+    let shown = Command::new("kitten")
+        .args(["icat", "--align", "left"])
+        .arg(path)
+        .status()
+        .is_ok_and(|status| status.success())
+        || Command::new("chafa")
+            .arg(path)
+            .status()
+            .is_ok_and(|status| status.success());
+    if !shown {
+        eprintln!(
+            "cannot show {}: neither kitten icat nor chafa worked",
+            path.display()
+        );
+    }
+}
+
 fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
+    let (show_result, words) = match words.first().map(String::as_str) {
+        Some("show=true") => (true, &words[1..]),
+        Some("show=false") => (false, &words[1..]),
+        _ => (false, words),
+    };
     let recipe = Recipe::from_words(words).map_err(|err| err.to_string())?;
     let shot = pairing::shots_of(std::slice::from_ref(&input.to_path_buf()))
         .map_err(|err| err.to_string())?
@@ -46,6 +72,9 @@ fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
         elapsed.as_secs_f64(),
         output.display()
     );
+    if show_result {
+        show(output);
+    }
     Ok(())
 }
 
@@ -53,7 +82,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let [input, output, words @ ..] = args.as_slice() else {
         eprintln!(
-            "usage: effects <image> <output.jpg> [seed=N] <effect> [name=value]... [+ <effect> ...]\neffects: {}",
+            "usage: effects <image> <output.jpg> [show=true] [seed=N] <effect> [name=value]... [+ <effect> ...]\neffects: {}",
             NAMES.join(", ")
         );
         return ExitCode::FAILURE;
