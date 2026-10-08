@@ -492,7 +492,7 @@ fn blend_over(under: &RgbImage, over: &RgbImage, blend: Blend, mix: u8) -> RgbIm
 }
 
 /// The colour at a point between pixels, the edges extended.
-fn bilinear(image: &RgbImage, x: f32, y: f32) -> [f32; 3] {
+pub(super) fn bilinear(image: &RgbImage, x: f32, y: f32) -> [f32; 3] {
     let (width, height) = (image.width() as i64, image.height() as i64);
     let clamp = |v: i64, size: i64| v.clamp(0, size - 1) as u32;
     let (x0, y0) = (x.floor() as i64, y.floor() as i64);

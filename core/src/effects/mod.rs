@@ -11,6 +11,7 @@ mod print;
 mod random;
 mod recipe;
 mod sort;
+mod warp;
 
 pub use film::{
     Aberration, Blend, Bloom, Drag, DragKind, Fade, Grain, Leak, Vignette, aberration, bloom, drag,
@@ -24,6 +25,7 @@ pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Color, Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, Recipe};
 pub use sort::{Direction, PixelSort, pixel_sort};
+pub use warp::{Liquid, liquid};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

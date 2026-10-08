@@ -30,6 +30,7 @@ use super::glitch::{
 use super::jpeg::{Databend, GenerationLoss, databend, generation_loss};
 use super::print::{Dither, Duotone, Scanlines, dither, duotone, scanlines};
 use super::sort::{PixelSort, pixel_sort};
+use super::warp::{Liquid, liquid};
 
 /// One effect with its parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,10 +51,11 @@ pub enum Effect {
     Vignette(Vignette),
     Leak(Leak),
     Bloom(Bloom),
+    Liquid(Liquid),
 }
 
 /// The names of the effects, as written in a recipe.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 17] = [
     "loss",
     "bend",
     "sort",
@@ -70,6 +72,7 @@ pub const NAMES: [&str; 16] = [
     "vignette",
     "leak",
     "bloom",
+    "liquid",
 ];
 
 impl Effect {
@@ -91,6 +94,7 @@ impl Effect {
             Effect::Vignette(_) => "vignette",
             Effect::Leak(_) => "leak",
             Effect::Bloom(_) => "bloom",
+            Effect::Liquid(_) => "liquid",
         }
     }
 
@@ -113,6 +117,7 @@ impl Effect {
             Effect::Vignette(params) => vignette(image, params),
             Effect::Leak(params) => leak(image, params, seed),
             Effect::Bloom(params) => bloom(image, params),
+            Effect::Liquid(params) => liquid(image, params, seed),
         })
     }
 
@@ -250,6 +255,15 @@ impl Effect {
                     strength: params.get("strength", d.strength)?,
                 })
             }
+            "liquid" => {
+                let d = Liquid::default();
+                Effect::Liquid(Liquid {
+                    amplitude: params.get("amplitude", d.amplitude)?,
+                    scale: params.get("scale", d.scale)?,
+                    octaves: params.get("octaves", d.octaves)?,
+                    drift: params.get("drift", d.drift)?,
+                })
+            }
             other => return Err(Error::UnknownEffect(other.to_owned())),
         };
         params.finish()?;
@@ -335,6 +349,11 @@ impl fmt::Display for Effect {
                 f,
                 "bloom threshold={} radius={} strength={}",
                 p.threshold, p.radius, p.strength
+            ),
+            Effect::Liquid(p) => write!(
+                f,
+                "liquid amplitude={} scale={} octaves={} drift={}",
+                p.amplitude, p.scale, p.octaves, p.drift
             ),
         }
     }
