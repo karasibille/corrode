@@ -10,7 +10,9 @@
 //! ```
 //!
 //! Parameters left out take their defaults; printing a recipe writes
-//! them all.
+//! them all. For an animation, a number may be a range, `shift=20..160`:
+//! the recipe is then read at a moment between 0 and 1, where the value
+//! stands between the two ends.
 
 use std::fmt;
 use std::str::FromStr;
@@ -62,9 +64,10 @@ impl Effect {
         })
     }
 
-    /// An effect from its name and its `name=value` parameters.
-    fn parse(name: &str, pairs: &[(&str, &str)]) -> Result<Effect, Error> {
-        let mut params = Params::new(name, pairs);
+    /// An effect from its name and its `name=value` parameters, read at
+    /// moment `t` for the ranges.
+    fn parse(name: &str, pairs: &[(&str, &str)], t: f64) -> Result<Effect, Error> {
+        let mut params = Params::new(name, pairs, t);
         let effect = match name {
             "loss" => {
                 let d = GenerationLoss::default();
@@ -186,8 +189,16 @@ impl Recipe {
         Ok(current)
     }
 
-    /// A recipe from its words, as split on spaces.
+    /// A recipe from its words, as split on spaces; a range takes its
+    /// first value.
     pub fn from_words<S: AsRef<str>>(words: &[S]) -> Result<Recipe, Error> {
+        Recipe::from_words_at(words, 0.0)
+    }
+
+    /// A recipe from its words at moment `t`, 0 to 1, of an animation:
+    /// a parameter given as a range `a..b` stands at `t` between `a`
+    /// and `b`.
+    pub fn from_words_at<S: AsRef<str>>(words: &[S], t: f64) -> Result<Recipe, Error> {
         let mut seed = 1;
         let mut steps = Vec::new();
         let mut current: Option<(&str, Vec<(&str, &str)>)> = None;
@@ -213,14 +224,14 @@ impl Recipe {
                 }
                 (None, _) => {
                     if let Some((name, pairs)) = current.take() {
-                        steps.push(Effect::parse(name, &pairs)?);
+                        steps.push(Effect::parse(name, &pairs, t)?);
                     }
                     current = Some((word, Vec::new()));
                 }
             }
         }
         if let Some((name, pairs)) = current.take() {
-            steps.push(Effect::parse(name, &pairs)?);
+            steps.push(Effect::parse(name, &pairs, t)?);
         }
         if steps.is_empty() {
             return Err(Error::Empty);
@@ -248,19 +259,36 @@ impl fmt::Display for Recipe {
 }
 
 /// The `name=value` parameters of one effect, each read once; what is
-/// left unread is a mistake.
+/// left unread is a mistake. Ranges are read at moment `t`.
 struct Params<'a> {
     effect: &'a str,
     pairs: &'a [(&'a str, &'a str)],
     read: Vec<bool>,
+    t: f64,
+}
+
+/// A number, or `a..b` taken at `t` between `a` and `b`: whole numbers
+/// give a whole number, so that `20..160` suits a parameter in pixels.
+fn at_moment(value: &str, t: f64) -> Option<String> {
+    let Some((a, b)) = value.split_once("..") else {
+        return Some(value.to_owned());
+    };
+    let t = t.clamp(0.0, 1.0);
+    if let (Ok(a), Ok(b)) = (a.parse::<i64>(), b.parse::<i64>()) {
+        let between = a as f64 + (b - a) as f64 * t;
+        return Some(between.round().to_string());
+    }
+    let (a, b) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
+    Some((a + (b - a) * t).to_string())
 }
 
 impl<'a> Params<'a> {
-    fn new(effect: &'a str, pairs: &'a [(&'a str, &'a str)]) -> Params<'a> {
+    fn new(effect: &'a str, pairs: &'a [(&'a str, &'a str)], t: f64) -> Params<'a> {
         Params {
             effect,
             pairs,
             read: vec![false; pairs.len()],
+            t,
         }
     }
 
@@ -278,17 +306,23 @@ impl<'a> Params<'a> {
 
     fn get<T: FromStr>(&mut self, name: &str, default: T) -> Result<T, Error> {
         match self.text(name) {
-            Some(value) => value.parse().map_err(|_| self.bad(name, value)),
+            Some(value) => at_moment(value, self.t)
+                .and_then(|now| now.parse().ok())
+                .ok_or_else(|| self.bad(name, value)),
             None => Ok(default),
         }
     }
 
-    /// A parameter written `a,b`.
+    /// A parameter written `a,b`, each side maybe a range.
     fn pair<T: FromStr + Copy>(&mut self, name: &str, default: (T, T)) -> Result<(T, T), Error> {
         match self.text(name) {
             Some(value) => value
                 .split_once(',')
-                .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
+                .and_then(|(a, b)| {
+                    let a = at_moment(a, self.t)?.parse().ok()?;
+                    let b = at_moment(b, self.t)?.parse().ok()?;
+                    Some((a, b))
+                })
                 .ok_or_else(|| self.bad(name, value)),
             None => Ok(default),
         }
@@ -345,6 +379,24 @@ mod tests {
         for name in NAMES {
             assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), name);
         }
+    }
+
+    #[test]
+    fn ranges_stand_at_a_moment_of_the_animation() {
+        let words = ["slice", "shift=20..160", "height=4..8,10", "slices=3"];
+        let at = |t| match Recipe::from_words_at(&words, t).unwrap().steps[0] {
+            Effect::SliceShift(p) => (p.shift, p.height, p.slices),
+            _ => panic!(),
+        };
+        assert_eq!(at(0.0), (20, (4, 10), 3));
+        assert_eq!(at(0.5), (90, (6, 10), 3));
+        assert_eq!(at(1.0), (160, (8, 10), 3));
+        assert_eq!(
+            Recipe::from_words(&words).unwrap().steps[0],
+            Recipe::from_words_at(&words, 0.0).unwrap().steps[0]
+        );
+        assert!(Recipe::from_words_at(&["slice", "shift=a..b"], 0.5).is_err());
+        assert_eq!(at_moment("0.5..1.5", 0.5), Some("1".to_owned()));
     }
 
     #[test]
