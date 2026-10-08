@@ -70,8 +70,9 @@ impl Easing {
     }
 }
 
-/// Takes the options off the front of the words, leaving the recipe.
-fn options(words: &[String]) -> Result<(Options, &[String]), String> {
+/// Takes the options out of the words before the first effect, leaving
+/// the recipe with its own (`seed=`).
+fn options(words: &[String]) -> Result<(Options, Vec<String>), String> {
     let mut options = Options {
         frames: 24,
         fps: 12,
@@ -80,11 +81,18 @@ fn options(words: &[String]) -> Result<(Options, &[String]), String> {
         jitter: true,
         easing: Easing::Smooth,
     };
-    let mut rest = 0;
-    for (i, word) in words.iter().enumerate() {
-        let Some((name, value)) = word.split_once('=') else {
-            break;
+    let mut recipe = Vec::with_capacity(words.len());
+    let mut before_effects = true;
+    for word in words {
+        let option = match word.split_once('=') {
+            Some(pair) if before_effects => pair,
+            _ => {
+                before_effects = false;
+                recipe.push(word.clone());
+                continue;
+            }
         };
+        let (name, value) = option;
         let bad = || format!("{name}: cannot read '{value}'");
         match name {
             "frames" => options.frames = value.parse().map_err(|_| bad())?,
@@ -94,18 +102,18 @@ fn options(words: &[String]) -> Result<(Options, &[String]), String> {
             "jitter" => options.jitter = value.parse().map_err(|_| bad())?,
             "easing" => options.easing = Easing::parse(value).ok_or_else(bad)?,
             // The recipe's own.
-            _ => break,
+            _ => recipe.push(word.clone()),
         }
-        rest = i + 1;
     }
     if options.frames == 0 || options.fps == 0 || options.width == 0 {
         return Err("frames, fps and width must be above zero".to_owned());
     }
-    Ok((options, &words[rest..]))
+    Ok((options, recipe))
 }
 
 fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
     let (options, words) = options(words)?;
+    let words = words.as_slice();
     // Read once to report mistakes before any work.
     let recipe = Recipe::from_words(words).map_err(|err| err.to_string())?;
     let shot = pairing::shots_of(std::slice::from_ref(&input.to_path_buf()))
