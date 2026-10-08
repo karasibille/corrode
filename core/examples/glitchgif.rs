@@ -10,7 +10,9 @@
 //! Options before the recipe: `frames` (24), `fps` (12), `width` of the
 //! GIF (800), `boomerang` (true: the animation goes back to its start,
 //! so that the loop does not jump), `jitter` (true: the seed moves on
-//! at each frame).
+//! at each frame), `easing` (how the ranges move: `smooth`, slow at
+//! both ends, `in`, slow at the start, `out`, slow at the end, or
+//! `linear`).
 
 use std::env;
 use std::fs::File;
@@ -31,6 +33,41 @@ struct Options {
     width: u32,
     boomerang: bool,
     jitter: bool,
+    easing: Easing,
+}
+
+/// How the ranges of a recipe move over the animation.
+#[derive(Clone, Copy)]
+enum Easing {
+    Linear,
+    /// Slow at both ends.
+    Smooth,
+    /// Slow at the start.
+    In,
+    /// Slow at the end.
+    Out,
+}
+
+impl Easing {
+    fn parse(text: &str) -> Option<Easing> {
+        Some(match text {
+            "linear" => Easing::Linear,
+            "smooth" => Easing::Smooth,
+            "in" => Easing::In,
+            "out" => Easing::Out,
+            _ => return None,
+        })
+    }
+
+    /// The moment of the ranges for a moment of the animation, both 0 to 1.
+    fn at(self, t: f64) -> f64 {
+        match self {
+            Easing::Linear => t,
+            Easing::Smooth => t * t * (3.0 - 2.0 * t),
+            Easing::In => t * t,
+            Easing::Out => 1.0 - (1.0 - t) * (1.0 - t),
+        }
+    }
 }
 
 /// Takes the options off the front of the words, leaving the recipe.
@@ -41,6 +78,7 @@ fn options(words: &[String]) -> Result<(Options, &[String]), String> {
         width: 800,
         boomerang: true,
         jitter: true,
+        easing: Easing::Smooth,
     };
     let mut rest = 0;
     for (i, word) in words.iter().enumerate() {
@@ -54,6 +92,7 @@ fn options(words: &[String]) -> Result<(Options, &[String]), String> {
             "width" => options.width = value.parse().map_err(|_| bad())?,
             "boomerang" => options.boomerang = value.parse().map_err(|_| bad())?,
             "jitter" => options.jitter = value.parse().map_err(|_| bad())?,
+            "easing" => options.easing = Easing::parse(value).ok_or_else(bad)?,
             // The recipe's own.
             _ => break,
         }
@@ -88,8 +127,8 @@ fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
     let last = options.frames.saturating_sub(1).max(1) as f64;
     let mut frames = Vec::with_capacity(options.frames as usize * 2);
     for i in 0..options.frames {
-        let mut recipe =
-            Recipe::from_words_at(words, f64::from(i) / last).map_err(|err| err.to_string())?;
+        let t = options.easing.at(f64::from(i) / last);
+        let mut recipe = Recipe::from_words_at(words, t).map_err(|err| err.to_string())?;
         if options.jitter {
             recipe.seed = recipe.seed.wrapping_add(u64::from(i));
         }
