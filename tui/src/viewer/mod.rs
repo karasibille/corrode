@@ -37,6 +37,10 @@ const PRELOAD: usize = 2;
 /// Previews kept in memory on each side, a bit more than preloaded so
 /// that going back and forth does not decode again.
 const KEEP: usize = 3;
+/// Full pictures kept on each side of the current shot while zoomed, so
+/// that comparing a detail across a burst does not wait for each one:
+/// about 60 MB each.
+const KEEP_FULL: usize = 1;
 /// Height of the burst thumbnails, in rows; a line of marks goes below.
 const THUMB_ROWS: u16 = 5;
 
@@ -86,7 +90,8 @@ pub struct Viewer {
     protocol_name: String,
     thumbnail_size: Size,
     previews: HashMap<usize, Result<Arc<Picture>, String>>,
-    full: Option<(usize, Result<Arc<Picture>, String>)>,
+    /// The current shot's, and its neighbours' while zoomed.
+    fulls: HashMap<usize, Result<Arc<Picture>, String>>,
     timings: HashMap<Job, Duration>,
     /// The shot and burst the jobs were last scheduled for, and whether
     /// it was zoomed.
@@ -140,7 +145,7 @@ impl Viewer {
                 THUMB_ROWS,
             ),
             previews: HashMap::new(),
-            full: None,
+            fulls: HashMap::new(),
             timings: HashMap::new(),
             scheduled: None,
             requested: None,
@@ -154,8 +159,8 @@ impl Viewer {
     }
 
     fn full_picture(&self) -> Option<&Arc<Picture>> {
-        match &self.full {
-            Some((index, Ok(picture))) if *index == self.app.index => Some(picture),
+        match self.fulls.get(&self.app.index) {
+            Some(Ok(picture)) => Some(picture),
             _ => None,
         }
     }
@@ -195,9 +200,8 @@ impl Viewer {
         self.scheduled = scheduled;
 
         self.previews.retain(|&i, _| i.abs_diff(index) <= KEEP);
-        if self.full.as_ref().is_some_and(|(i, _)| *i != index) {
-            self.full = None;
-        }
+        let keep_full = if zoomed { KEEP_FULL } else { 0 };
+        self.fulls.retain(|&i, _| i.abs_diff(index) <= keep_full);
 
         let last = self.shots.len() - 1;
         let neighbours = (1..=PRELOAD).flat_map(|distance| {
@@ -206,10 +210,19 @@ impl Viewer {
                 index.checked_sub(distance),
             ]
         });
-        // Zoomed, the full picture is what is on screen: it comes first.
+        // Zoomed, the full picture is what is on screen: it comes first,
+        // and the neighbours' full pictures are prepared for the next
+        // comparison.
         let mut jobs = vec![Job::Head(index), Job::Preview(index)];
         if zoomed {
             jobs.insert(1, Job::Full(index));
+            let near = (1..=KEEP_FULL).flat_map(|distance| {
+                [
+                    index.checked_add(distance).filter(|&i| i <= last),
+                    index.checked_sub(distance),
+                ]
+            });
+            jobs.extend(near.flatten().map(Job::Full));
         }
         jobs.extend(neighbours.flatten().map(Job::Preview));
         if !zoomed {
@@ -222,7 +235,7 @@ impl Viewer {
         jobs.retain(|job| match *job {
             Job::Head(i) => self.times[i] == Time::Unknown,
             Job::Preview(i) => !self.previews.contains_key(&i),
-            Job::Full(i) => self.full.as_ref().is_none_or(|(full, _)| *full != i),
+            Job::Full(i) => !self.fulls.contains_key(&i),
             Job::Assess(i) => self.states[i].assessment.is_none(),
             // Only started by the user, through the loader's pinned jobs.
             Job::Deband(_) => false,
@@ -260,7 +273,7 @@ impl Viewer {
         };
         // Everything indexed is stale, and is loaded again.
         self.previews.clear();
-        self.full = None;
+        self.fulls.clear();
         self.timings.clear();
         self.scheduled = None;
         self.requested = None;
@@ -325,7 +338,9 @@ impl Viewer {
                         Job::Preview(i) if i.abs_diff(self.app.index) <= KEEP => {
                             self.previews.insert(i, picture);
                         }
-                        Job::Full(i) if i == self.app.index => self.full = Some((i, picture)),
+                        Job::Full(i) if i.abs_diff(self.app.index) <= KEEP_FULL => {
+                            self.fulls.insert(i, picture);
+                        }
                         _ => {}
                     }
                 }
