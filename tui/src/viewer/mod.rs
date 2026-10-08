@@ -7,7 +7,7 @@ mod draw;
 mod help;
 mod lines;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -37,10 +37,13 @@ const PRELOAD: usize = 2;
 /// Previews kept in memory on each side, a bit more than preloaded so
 /// that going back and forth does not decode again.
 const KEEP: usize = 3;
-/// Full pictures kept on each side of the current shot while zoomed, so
-/// that comparing a detail across a burst does not wait for each one:
+/// Full pictures prepared on each side of the current shot while zoomed,
+/// so that comparing a detail across a burst does not wait for each one:
 /// about 60 MB each.
 const KEEP_FULL: usize = 1;
+/// Shots lately seen zoomed whose full pictures are kept too, so that
+/// coming back to one is instant.
+const RECENT_FULL: usize = 4;
 /// Height of the burst thumbnails, in rows; a line of marks goes below.
 const THUMB_ROWS: u16 = 5;
 
@@ -90,8 +93,11 @@ pub struct Viewer {
     protocol_name: String,
     thumbnail_size: Size,
     previews: HashMap<usize, Result<Arc<Picture>, String>>,
-    /// The current shot's, and its neighbours' while zoomed.
+    /// The current shot's, and its neighbours' and the lately seen ones'
+    /// while zoomed.
     fulls: HashMap<usize, Result<Arc<Picture>, String>>,
+    /// Shots seen zoomed, the latest first, at most `RECENT_FULL`.
+    recent: VecDeque<usize>,
     timings: HashMap<Job, Duration>,
     /// The shot and burst the jobs were last scheduled for, and whether
     /// it was zoomed.
@@ -146,6 +152,7 @@ impl Viewer {
             ),
             previews: HashMap::new(),
             fulls: HashMap::new(),
+            recent: VecDeque::new(),
             timings: HashMap::new(),
             scheduled: None,
             requested: None,
@@ -156,6 +163,13 @@ impl Viewer {
             help: false,
             help_scroll: 0,
         }
+    }
+
+    /// Whether the full picture of a shot is kept: zoomed, the neighbours
+    /// and the lately seen shots, for the next comparison.
+    fn keeps_full(&self, i: usize) -> bool {
+        matches!(self.app.mode, Mode::Zoom { .. })
+            && (i.abs_diff(self.app.index) <= KEEP_FULL || self.recent.contains(&i))
     }
 
     fn full_picture(&self) -> Option<&Arc<Picture>> {
@@ -200,8 +214,20 @@ impl Viewer {
         self.scheduled = scheduled;
 
         self.previews.retain(|&i, _| i.abs_diff(index) <= KEEP);
-        let keep_full = if zoomed { KEEP_FULL } else { 0 };
-        self.fulls.retain(|&i, _| i.abs_diff(index) <= keep_full);
+        if zoomed {
+            self.recent.retain(|&i| i != index);
+            self.recent.push_front(index);
+            self.recent.truncate(RECENT_FULL);
+        } else {
+            self.recent.clear();
+        }
+        let kept: Vec<usize> = self
+            .fulls
+            .keys()
+            .copied()
+            .filter(|&i| i == index || self.keeps_full(i))
+            .collect();
+        self.fulls.retain(|i, _| kept.contains(i));
 
         let last = self.shots.len() - 1;
         let neighbours = (1..=PRELOAD).flat_map(|distance| {
@@ -274,6 +300,7 @@ impl Viewer {
         // Everything indexed is stale, and is loaded again.
         self.previews.clear();
         self.fulls.clear();
+        self.recent.clear();
         self.timings.clear();
         self.scheduled = None;
         self.requested = None;
@@ -338,7 +365,7 @@ impl Viewer {
                         Job::Preview(i) if i.abs_diff(self.app.index) <= KEEP => {
                             self.previews.insert(i, picture);
                         }
-                        Job::Full(i) if i.abs_diff(self.app.index) <= KEEP_FULL => {
+                        Job::Full(i) if i == self.app.index || self.keeps_full(i) => {
                             self.fulls.insert(i, picture);
                         }
                         _ => {}
