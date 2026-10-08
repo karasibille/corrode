@@ -3,6 +3,7 @@
 //! ```sh
 //! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/loss.jpg loss generations=30 quality=25 shift=1,0
 //! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/bend.jpg bend quality=75 hits=8 seed=1
+//! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/sort.jpg sort direction=horizontal low=40 high=220 reverse=false
 //! ```
 //!
 //! The picture is the shot's full-size image (JPEG, else developed RAW).
@@ -13,7 +14,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use corrode_core::effects::{self, Databend, GenerationLoss};
+use corrode_core::effects::{self, Databend, GenerationLoss, PixelSort};
 use corrode_core::{pairing, picture};
 
 fn parse<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> Result<T, String> {
@@ -65,7 +66,23 @@ fn run(input: &PathBuf, output: &PathBuf, effect: &str, args: &[String]) -> Resu
                 },
             )?
         }
-        other => return Err(format!("unknown effect '{other}' (known: loss, bend)")),
+        "sort" => {
+            let defaults = PixelSort::default();
+            effects::pixel_sort(
+                &image,
+                PixelSort {
+                    direction: parse(args, "direction", defaults.direction)?,
+                    low: parse(args, "low", defaults.low)?,
+                    high: parse(args, "high", defaults.high)?,
+                    reverse: parse(args, "reverse", defaults.reverse)?,
+                },
+            )
+        }
+        other => {
+            return Err(format!(
+                "unknown effect '{other}' (known: loss, bend, sort)"
+            ));
+        }
     };
     let elapsed = start.elapsed();
     if let Some(dir) = output.parent() {
