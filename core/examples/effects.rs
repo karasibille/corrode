@@ -1,34 +1,27 @@
-//! Applies a creative effect to a picture and saves the result as JPEG.
+//! Applies a recipe of creative effects to a picture and saves the result
+//! as JPEG, printing the recipe in full so that it can be made again.
 //!
 //! ```sh
-//! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/loss.jpg loss generations=30 quality=25 shift=1,0
-//! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/bend.jpg bend quality=75 hits=8 seed=1
-//! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/sort.jpg sort direction=horizontal low=40 high=220 reverse=false
+//! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/x.jpg seed=7 sort low=40 high=220 + slice slices=12 split=true
 //! ```
 //!
+//! Effects: loss (generation loss), bend (databending), sort (pixel
+//! sorting), slice (slice shift), stretch (pixel stretch), split (channel
+//! split); `name=value` sets a parameter, the rest take their defaults.
 //! The picture is the shot's full-size image (JPEG, else developed RAW).
 //! Use `--release`: effects go through the whole picture many times.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use corrode_core::effects::{self, Databend, GenerationLoss, PixelSort};
+use corrode_core::effects::{NAMES, Recipe};
 use corrode_core::{pairing, picture};
 
-fn parse<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> Result<T, String> {
-    let prefix = format!("{name}=");
-    match args.iter().find_map(|arg| arg.strip_prefix(&prefix)) {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("{name}: cannot read '{value}'")),
-        None => Ok(default),
-    }
-}
-
-fn run(input: &PathBuf, output: &PathBuf, effect: &str, args: &[String]) -> Result<(), String> {
-    let shot = pairing::shots_of(std::slice::from_ref(input))
+fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
+    let recipe = Recipe::from_words(words).map_err(|err| err.to_string())?;
+    let shot = pairing::shots_of(std::slice::from_ref(&input.to_path_buf()))
         .map_err(|err| err.to_string())?
         .into_iter()
         .next()
@@ -38,52 +31,7 @@ fn run(input: &PathBuf, output: &PathBuf, effect: &str, args: &[String]) -> Resu
         .image
         .to_rgb8();
     let start = Instant::now();
-    let result = match effect {
-        "loss" => {
-            let defaults = GenerationLoss::default();
-            let shift: String = parse(args, "shift", "1,0".to_owned())?;
-            let (dx, dy) = shift
-                .split_once(',')
-                .and_then(|(dx, dy)| Some((dx.parse().ok()?, dy.parse().ok()?)))
-                .ok_or_else(|| format!("shift: cannot read '{shift}'"))?;
-            effects::generation_loss(
-                &image,
-                GenerationLoss {
-                    generations: parse(args, "generations", defaults.generations)?,
-                    quality: parse(args, "quality", defaults.quality)?,
-                    shift: (dx, dy),
-                },
-            )
-        }
-        "bend" => {
-            let defaults = Databend::default();
-            effects::databend(
-                &image,
-                Databend {
-                    quality: parse(args, "quality", defaults.quality)?,
-                    hits: parse(args, "hits", defaults.hits)?,
-                    seed: parse(args, "seed", defaults.seed)?,
-                },
-            )?
-        }
-        "sort" => {
-            let defaults = PixelSort::default();
-            effects::pixel_sort(
-                &image,
-                PixelSort {
-                    direction: parse(args, "direction", defaults.direction)?,
-                    low: parse(args, "low", defaults.low)?,
-                    high: parse(args, "high", defaults.high)?,
-                    reverse: parse(args, "reverse", defaults.reverse)?,
-                },
-            )
-        }
-        other => {
-            return Err(format!(
-                "unknown effect '{other}' (known: loss, bend, sort)"
-            ));
-        }
-    };
+    let result = recipe.apply(&image).map_err(|err| err.to_string())?;
     let elapsed = start.elapsed();
     if let Some(dir) = output.parent() {
         std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
@@ -92,7 +40,7 @@ fn run(input: &PathBuf, output: &PathBuf, effect: &str, args: &[String]) -> Resu
         .save(output)
         .map_err(|err| format!("{}: {err}", output.display()))?;
     println!(
-        "{effect} on {}×{} in {:.1} s -> {}",
+        "{recipe}\n  on {}×{} in {:.1} s -> {}",
         image.width(),
         image.height(),
         elapsed.as_secs_f64(),
@@ -103,16 +51,14 @@ fn run(input: &PathBuf, output: &PathBuf, effect: &str, args: &[String]) -> Resu
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let [input, output, effect, params @ ..] = args.as_slice() else {
-        eprintln!("usage: effects <image> <output.jpg> <effect> [name=value]...");
+    let [input, output, words @ ..] = args.as_slice() else {
+        eprintln!(
+            "usage: effects <image> <output.jpg> [seed=N] <effect> [name=value]... [+ <effect> ...]\neffects: {}",
+            NAMES.join(", ")
+        );
         return ExitCode::FAILURE;
     };
-    match run(
-        &PathBuf::from(input),
-        &PathBuf::from(output),
-        effect,
-        params,
-    ) {
+    match run(&PathBuf::from(input), &PathBuf::from(output), words) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
