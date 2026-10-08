@@ -7,6 +7,97 @@ use std::io::Cursor;
 use image::codecs::jpeg::JpegEncoder;
 use image::{ImageFormat, RgbImage};
 
+/// Parameters of the databending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Databend {
+    /// JPEG quality the picture is encoded at before its bytes are
+    /// bent: the lower, the larger the blocks the damage shows in.
+    pub quality: u8,
+    /// How many bytes of the compressed picture are changed.
+    pub hits: u32,
+    /// Seed of the random choice of bytes: the same seed bends the same
+    /// picture the same way.
+    pub seed: u64,
+}
+
+impl Default for Databend {
+    fn default() -> Databend {
+        Databend {
+            quality: 75,
+            hits: 8,
+            seed: 1,
+        }
+    }
+}
+
+/// Changes a few bytes of the picture once compressed as JPEG, in the
+/// scan data after the headers, and decodes what comes out: each hit
+/// throws the colours and the blocks off from there to the end of the
+/// picture, or to the next hit.
+pub fn databend(image: &RgbImage, params: Databend) -> Result<RgbImage, String> {
+    let mut data = Cursor::new(Vec::new());
+    JpegEncoder::new_with_quality(&mut data, params.quality.clamp(1, 100))
+        .encode_image(image)
+        .map_err(|err| err.to_string())?;
+    let mut data = data.into_inner();
+    let start = scan_start(&data).ok_or("no scan in the JPEG")?;
+    // The last two bytes are the end-of-image marker.
+    let end = data.len().saturating_sub(2);
+    if start >= end {
+        return Err("empty scan".to_owned());
+    }
+    let mut random = Random(params.seed);
+    for _ in 0..params.hits {
+        let at = start + random.below(end - start);
+        // Never make a marker (0xFF followed by anything but 0): the
+        // decoder would stop at it, or take it for a new segment.
+        if data[at] == 0xFF || data.get(at.wrapping_sub(1)) == Some(&0xFF) {
+            continue;
+        }
+        data[at] = random.below(0xFF) as u8;
+    }
+    image::load_from_memory_with_format(&data, ImageFormat::Jpeg)
+        .map(|decoded| decoded.to_rgb8())
+        .map_err(|err| format!("the bent JPEG cannot be decoded: {err}"))
+}
+
+/// Where the entropy-coded data of a baseline JPEG starts: after the
+/// start-of-scan marker (FF DA) and its header.
+fn scan_start(jpeg: &[u8]) -> Option<usize> {
+    let mut i = 2; // after the start-of-image marker
+    while i + 4 <= jpeg.len() {
+        if jpeg[i] != 0xFF {
+            return None;
+        }
+        let marker = jpeg[i + 1];
+        let length = usize::from(u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]));
+        if marker == 0xDA {
+            return Some(i + 2 + length);
+        }
+        i += 2 + length;
+    }
+    None
+}
+
+/// A small deterministic random source (SplitMix64), enough to pick
+/// bytes to bend, so that a seed names a result.
+struct Random(u64);
+
+impl Random {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// A number in `0..bound`.
+    fn below(&mut self, bound: usize) -> usize {
+        (self.next() % bound.max(1) as u64) as usize
+    }
+}
+
 /// Parameters of the generation loss.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GenerationLoss {
@@ -100,6 +191,35 @@ mod tests {
             .map(|(a, b)| u64::from(a.abs_diff(b)))
             .sum();
         sum as f64 / (3 * a.width() * a.height()) as f64
+    }
+
+    #[test]
+    fn databending_changes_the_picture_the_same_way_for_a_seed() {
+        let original = picture();
+        let params = Databend {
+            quality: 50,
+            hits: 4,
+            seed: 7,
+        };
+        let bent = databend(&original, params).unwrap();
+        assert_eq!((bent.width(), bent.height()), (64, 48));
+        assert!(distance(&bent, &original) > 1.0);
+        assert_eq!(databend(&original, params).unwrap(), bent);
+        let other = databend(&original, Databend { seed: 8, ..params }).unwrap();
+        assert_ne!(other, bent);
+    }
+
+    #[test]
+    fn the_scan_starts_after_the_headers() {
+        let mut data = Cursor::new(Vec::new());
+        JpegEncoder::new_with_quality(&mut data, 50)
+            .encode_image(&picture())
+            .unwrap();
+        let data = data.into_inner();
+        let start = scan_start(&data).unwrap();
+        assert!(start > 100 && start < data.len() - 2);
+        assert_eq!(&data[data.len() - 2..], &[0xFF, 0xD9]);
+        assert!(scan_start(&[0xFF, 0xD8, 0x00]).is_none());
     }
 
     #[test]
