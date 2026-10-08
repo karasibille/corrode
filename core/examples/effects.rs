@@ -7,7 +7,8 @@
 //!
 //! Effects: loss (generation loss), bend (databending), sort (pixel
 //! sorting), slice (slice shift), stretch (pixel stretch), split (channel
-//! split), dither, duotone, scanlines; `name=value` sets a parameter,
+//! split), dither, duotone, scanlines, drag, aberration, grain, fade,
+//! vignette, leak, bloom; `name=value` sets a parameter,
 //! the rest take their defaults. `show=true` before the recipe shows
 //! the result in the terminal once saved (kitty, else chafa).
 //! The picture is the shot's full-size image (JPEG, else developed RAW).

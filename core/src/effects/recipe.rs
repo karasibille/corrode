@@ -20,6 +20,10 @@ use std::str::FromStr;
 use image::RgbImage;
 
 use super::Error;
+use super::film::{
+    Aberration, Bloom, Drag, Fade, Grain, Leak, Vignette, aberration, bloom, drag, fade, grain,
+    leak, vignette,
+};
 use super::glitch::{
     ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
 };
@@ -39,10 +43,17 @@ pub enum Effect {
     Dither(Dither),
     Duotone(Duotone),
     Scanlines(Scanlines),
+    Drag(Drag),
+    Aberration(Aberration),
+    Grain(Grain),
+    Fade(Fade),
+    Vignette(Vignette),
+    Leak(Leak),
+    Bloom(Bloom),
 }
 
 /// The names of the effects, as written in a recipe.
-pub const NAMES: [&str; 9] = [
+pub const NAMES: [&str; 16] = [
     "loss",
     "bend",
     "sort",
@@ -52,6 +63,13 @@ pub const NAMES: [&str; 9] = [
     "dither",
     "duotone",
     "scanlines",
+    "drag",
+    "aberration",
+    "grain",
+    "fade",
+    "vignette",
+    "leak",
+    "bloom",
 ];
 
 impl Effect {
@@ -66,6 +84,13 @@ impl Effect {
             Effect::Dither(_) => "dither",
             Effect::Duotone(_) => "duotone",
             Effect::Scanlines(_) => "scanlines",
+            Effect::Drag(_) => "drag",
+            Effect::Aberration(_) => "aberration",
+            Effect::Grain(_) => "grain",
+            Effect::Fade(_) => "fade",
+            Effect::Vignette(_) => "vignette",
+            Effect::Leak(_) => "leak",
+            Effect::Bloom(_) => "bloom",
         }
     }
 
@@ -81,6 +106,13 @@ impl Effect {
             Effect::Dither(params) => dither(image, params),
             Effect::Duotone(params) => duotone(image, params),
             Effect::Scanlines(params) => scanlines(image, params),
+            Effect::Drag(params) => drag(image, params),
+            Effect::Aberration(params) => aberration(image, params),
+            Effect::Grain(params) => grain(image, params, seed),
+            Effect::Fade(params) => fade(image, params),
+            Effect::Vignette(params) => vignette(image, params),
+            Effect::Leak(params) => leak(image, params, seed),
+            Effect::Bloom(params) => bloom(image, params),
         })
     }
 
@@ -162,6 +194,62 @@ impl Effect {
                     strength: params.get("strength", d.strength)?,
                 })
             }
+            "drag" => {
+                let d = Drag::default();
+                Effect::Drag(Drag {
+                    kind: params.get("kind", d.kind)?,
+                    length: params.get("length", d.length)?,
+                    angle: params.get("angle", d.angle)?,
+                    mix: params.get("mix", d.mix)?,
+                    blend: params.get("blend", d.blend)?,
+                })
+            }
+            "aberration" => {
+                let d = Aberration::default();
+                Effect::Aberration(Aberration {
+                    amount: params.get("amount", d.amount)?,
+                })
+            }
+            "grain" => {
+                let d = Grain::default();
+                Effect::Grain(Grain {
+                    strength: params.get("strength", d.strength)?,
+                    size: params.get("size", d.size)?,
+                    color: params.get("color", d.color)?,
+                })
+            }
+            "fade" => {
+                let d = Fade::default();
+                Effect::Fade(Fade {
+                    lift: params.get("lift", d.lift)?,
+                    saturation: params.get("saturation", d.saturation)?,
+                    tint: params.get("tint", d.tint)?,
+                    tint_amount: params.get("tint_amount", d.tint_amount)?,
+                })
+            }
+            "vignette" => {
+                let d = Vignette::default();
+                Effect::Vignette(Vignette {
+                    strength: params.get("strength", d.strength)?,
+                    start: params.get("start", d.start)?,
+                })
+            }
+            "leak" => {
+                let d = Leak::default();
+                Effect::Leak(Leak {
+                    color: params.get("color", d.color)?,
+                    strength: params.get("strength", d.strength)?,
+                    size: params.get("size", d.size)?,
+                })
+            }
+            "bloom" => {
+                let d = Bloom::default();
+                Effect::Bloom(Bloom {
+                    threshold: params.get("threshold", d.threshold)?,
+                    radius: params.get("radius", d.radius)?,
+                    strength: params.get("strength", d.strength)?,
+                })
+            }
             other => return Err(Error::UnknownEffect(other.to_owned())),
         };
         params.finish()?;
@@ -220,6 +308,33 @@ impl fmt::Display for Effect {
                 f,
                 "scanlines period={} thickness={} strength={}",
                 p.period, p.thickness, p.strength
+            ),
+            Effect::Drag(p) => write!(
+                f,
+                "drag kind={} length={} angle={} mix={} blend={}",
+                p.kind, p.length, p.angle, p.mix, p.blend
+            ),
+            Effect::Aberration(p) => write!(f, "aberration amount={}", p.amount),
+            Effect::Grain(p) => write!(
+                f,
+                "grain strength={} size={} color={}",
+                p.strength, p.size, p.color
+            ),
+            Effect::Fade(p) => write!(
+                f,
+                "fade lift={} saturation={} tint={} tint_amount={}",
+                p.lift, p.saturation, p.tint, p.tint_amount
+            ),
+            Effect::Vignette(p) => write!(f, "vignette strength={} start={}", p.strength, p.start),
+            Effect::Leak(p) => write!(
+                f,
+                "leak color={} strength={} size={}",
+                p.color, p.strength, p.size
+            ),
+            Effect::Bloom(p) => write!(
+                f,
+                "bloom threshold={} radius={} strength={}",
+                p.threshold, p.radius, p.strength
             ),
         }
     }
