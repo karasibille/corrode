@@ -17,3 +17,4 @@ pub mod pp3;
 pub mod rawtherapee;
 pub mod selection;
 pub mod sharpness;
+pub mod similarity;
