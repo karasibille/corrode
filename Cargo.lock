@@ -345,6 +345,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrode-preset"
+version = "0.1.0"
+dependencies = [
+ "corrode-core",
+]
+
+[[package]]
 name = "corrode-select"
 version = "0.1.0"
 dependencies = [

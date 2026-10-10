@@ -19,6 +19,7 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 | `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` marks, picture decoding, EXIF, light bands, effects |
 | `ui/` (`corrode-ui`) | What the terminal interfaces share: background jobs, terminal graphics, lines that fit |
 | `select/` (`corrode-select`) | Culling in the terminal (`ratatui` + `ratatui-image`), the `corrode-select` binary |
+| `preset/` (`corrode-preset`) | Applying a RawTherapee preset to a whole selection, group by group |
 
 ## Culling
 
@@ -48,6 +49,16 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | Esc, q | Leave the zoom / quit |
 
 There is nothing to save: marks are written as they are set. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute the first time. What the files told is kept in `~/.cache/corrode` (about 5 KB per shot), so that a directory seen before opens at once; an entry is dropped when its file changes.
+
+## Presets
+
+```sh
+corrode-preset selection/ --preset mon-preset.pp3 --ref _1139372            # what would change
+corrode-preset selection/ --preset mon-preset.pp3 --ref _1139372 --save-adjustments ajustements.txt
+corrode-preset selection/ --preset mon-preset.pp3 --ref _1139372 --adjustments ajustements.txt --apply
+```
+
+Make a preset from one shot in RawTherapee, then apply it to a whole selection sorted into subfolders. Each group gets the preset with its own exposure compensation, worked out from how light or dark the group is next to the shot the preset was made on (`--ref`). Any other setting can be changed per group in a small file (`[group]`, then `Section.Key=value`). The marks, crop, rotation and white balance of each shot are kept. Nothing is written without `--apply`, and each sidecar is copied to a `.bak` first.
 
 ## Core library
 
