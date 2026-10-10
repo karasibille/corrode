@@ -7,6 +7,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::{ImageFormat, RgbImage};
 
 use super::Error;
+use super::parallel;
 use super::random::Random;
 
 /// Parameters of the generation loss.
@@ -58,7 +59,7 @@ fn translate(image: &RgbImage, dx: i32, dy: i32) -> RgbImage {
     let source = |coordinate: u32, delta: i32, size: u32| {
         (i64::from(coordinate) - i64::from(delta)).clamp(0, i64::from(size) - 1) as u32
     };
-    RgbImage::from_fn(width, height, |x, y| {
+    parallel::from_fn(width, height, |x, y| {
         *image.get_pixel(source(x, dx, width), source(y, dy, height))
     })
 }

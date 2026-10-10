@@ -8,6 +8,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
 use super::glitch::{REFERENCE_WIDTH, scaled};
+use super::parallel;
 use super::sort::brightness;
 
 /// A colour written `rrggbb`, as on the web.
@@ -150,7 +151,7 @@ pub fn dither(image: &RgbImage, params: Dither) -> RgbImage {
             Rgb([0, 0, 0])
         }
     };
-    RgbImage::from_fn(width, height, |x, y| {
+    parallel::from_fn(width, height, |x, y| {
         let (sx, sy) = (
             ((x / dot) as usize).min(sw - 1),
             ((y / dot) as usize).min(sh - 1),
@@ -193,14 +194,14 @@ impl Default for Duotone {
 pub fn duotone(image: &RgbImage, params: Duotone) -> RgbImage {
     let (dark, light) = (params.dark.0.0, params.light.0.0);
     let mut printed = image.clone();
-    for pixel in printed.pixels_mut() {
+    parallel::for_each_pixel(&mut printed, |_, _, pixel| {
         let t = f32::from(brightness(*pixel)) / 255.0;
         for channel in 0..3 {
             let value = f32::from(dark[channel])
                 + (f32::from(light[channel]) - f32::from(dark[channel])) * t;
             pixel[channel] = value.round() as u8;
         }
-    }
+    });
     printed
 }
 
@@ -233,13 +234,11 @@ pub fn scanlines(image: &RgbImage, params: Scanlines) -> RgbImage {
     let thickness = scaled(params.thickness, scale).clamp(1, period);
     let keep = 1.0 - f32::from(params.strength.min(100)) / 100.0;
     let mut lined = image.clone();
-    for (y, row) in lined.rows_mut().enumerate() {
-        if (y as u32) % period < thickness {
-            for pixel in row {
-                *pixel = Rgb(pixel.0.map(|v| (f32::from(v) * keep).round() as u8));
-            }
+    parallel::for_each_pixel(&mut lined, |_, y, pixel| {
+        if y % period < thickness {
+            *pixel = Rgb(pixel.0.map(|v| (f32::from(v) * keep).round() as u8));
         }
-    }
+    });
     lined
 }
 

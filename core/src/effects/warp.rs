@@ -8,6 +8,7 @@ use image::{Rgb, RgbImage};
 
 use super::film::bilinear;
 use super::glitch::REFERENCE_WIDTH;
+use super::parallel;
 use super::random::Random;
 
 /// Parameters of the liquid distortion.
@@ -55,7 +56,7 @@ pub fn liquid(image: &RgbImage, params: Liquid, seed: u64) -> RgbImage {
     let rows = (height as f32 / wave).ceil() as usize + 2;
     let field_x = Noise::new(seed, cells << octaves, rows << octaves);
     let field_y = Noise::new(seed.wrapping_add(0x5EED), cells << octaves, rows << octaves);
-    RgbImage::from_fn(width, height, |x, y| {
+    parallel::from_fn(width, height, |x, y| {
         let (u, v) = ((x as f32 + drift) / wave, y as f32 / wave);
         let push = |field: &Noise| {
             let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);

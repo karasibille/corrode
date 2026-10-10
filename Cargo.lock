@@ -338,6 +338,7 @@ dependencies = [
  "image",
  "postcard",
  "rawler",
+ "rayon",
  "serde",
  "tempfile",
  "thiserror 2.0.21",

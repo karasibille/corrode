@@ -1,6 +1,9 @@
 //! Pixel sorting, as Kim Asendorf's: the picture melts into streaks.
 
 use image::{Rgb, RgbImage};
+use rayon::prelude::*;
+
+use super::parallel;
 
 /// Which way an effect runs over the picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -75,38 +78,43 @@ pub fn pixel_sort(image: &RgbImage, params: PixelSort) -> RgbImage {
         Direction::Vertical => (line, i),
     };
     let (low, high) = (params.low.min(params.high), params.high.max(params.low));
-    let mut sorted = image.clone();
-    let mut run: Vec<(u8, Rgb<u8>)> = Vec::with_capacity(length as usize);
-    for line in 0..lines {
-        let mut i = 0;
-        while i < length {
-            // Collect a run of pixels within the range.
-            run.clear();
-            let start = i;
-            while i < length {
-                let pixel = *image.get_pixel(at(line, i).0, at(line, i).1);
-                let light = brightness(pixel);
-                if !(low..=high).contains(&light) {
-                    break;
+    // Each line sorted on its own, lines in parallel.
+    let sorted_lines: Vec<Vec<Rgb<u8>>> = (0..lines)
+        .into_par_iter()
+        .map(|line| {
+            let mut pixels: Vec<Rgb<u8>> = (0..length)
+                .map(|i| {
+                    let (x, y) = at(line, i);
+                    *image.get_pixel(x, y)
+                })
+                .collect();
+            let mut i = 0;
+            while i < pixels.len() {
+                // A run of pixels within the range.
+                let start = i;
+                while i < pixels.len() && (low..=high).contains(&brightness(pixels[i])) {
+                    i += 1;
                 }
-                run.push((light, pixel));
+                if i - start > 1 {
+                    let run = &mut pixels[start..i];
+                    run.sort_unstable_by_key(|pixel| brightness(*pixel));
+                    if params.reverse {
+                        run.reverse();
+                    }
+                }
+                // Past the pixel that ended the run.
                 i += 1;
             }
-            if run.len() > 1 {
-                run.sort_unstable_by_key(|(light, _)| *light);
-                if params.reverse {
-                    run.reverse();
-                }
-                for (k, (_, pixel)) in run.iter().enumerate() {
-                    let (x, y) = at(line, start + k as u32);
-                    sorted.put_pixel(x, y, *pixel);
-                }
-            }
-            // Past the pixel that ended the run.
-            i += 1;
-        }
-    }
-    sorted
+            pixels
+        })
+        .collect();
+    parallel::from_fn(width, height, |x, y| {
+        let (line, i) = match params.direction {
+            Direction::Horizontal => (y, x),
+            Direction::Vertical => (x, y),
+        };
+        sorted_lines[line as usize][i as usize]
+    })
 }
 
 /// Perceived brightness of a pixel, 0 to 255.

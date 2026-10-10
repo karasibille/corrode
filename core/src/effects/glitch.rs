@@ -7,6 +7,7 @@
 
 use image::{Rgb, RgbImage};
 
+use super::parallel;
 use super::random::Random;
 use super::sort::Direction;
 
@@ -82,19 +83,15 @@ pub fn slice_shift(image: &RgbImage, params: SliceShift, seed: u64) -> RgbImage 
             [shift; 3]
         };
         let invert = params.invert && random.once_in(3);
-        for y in top..bottom {
-            for x in 0..width {
-                let mut pixel = Rgb([0; 3]);
-                for (channel, &dx) in shifts.iter().enumerate() {
-                    let source = (i64::from(x) - i64::from(dx)).rem_euclid(i64::from(width)) as u32;
-                    pixel[channel] = image.get_pixel(source, y)[channel];
-                }
-                if invert {
-                    pixel = Rgb(pixel.0.map(|v| 255 - v));
-                }
-                shifted.put_pixel(x, y, pixel);
+        parallel::for_each_pixel_in_rows(&mut shifted, top, bottom, |x, y, pixel| {
+            for (channel, &dx) in shifts.iter().enumerate() {
+                let source = (i64::from(x) - i64::from(dx)).rem_euclid(i64::from(width)) as u32;
+                pixel[channel] = image.get_pixel(source, y)[channel];
             }
-        }
+            if invert {
+                *pixel = Rgb(pixel.0.map(|v| 255 - v));
+            }
+        });
     }
     shifted
 }
@@ -191,7 +188,7 @@ pub fn channel_split(image: &RgbImage, params: ChannelSplit) -> RgbImage {
     let source = |coordinate: u32, delta: i32, size: u32| {
         (i64::from(coordinate) - i64::from(delta)).clamp(0, i64::from(size) - 1) as u32
     };
-    RgbImage::from_fn(width, height, |x, y| {
+    parallel::from_fn(width, height, |x, y| {
         let mut pixel = Rgb([0; 3]);
         for (channel, &(dx, dy)) in offsets.iter().enumerate() {
             pixel[channel] = image.get_pixel(source(x, dx, width), source(y, dy, height))[channel];

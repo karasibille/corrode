@@ -7,6 +7,7 @@
 mod film;
 mod glitch;
 mod jpeg;
+mod parallel;
 mod print;
 mod random;
 mod recipe;

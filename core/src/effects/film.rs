@@ -10,6 +10,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
 use super::glitch::{REFERENCE_WIDTH, scaled};
+use super::parallel;
 use super::print::Color;
 use super::random::Random;
 use super::sort::brightness;
@@ -147,7 +148,7 @@ pub fn drag(image: &RgbImage, params: Drag) -> RgbImage {
         params.angle.to_radians().cos(),
         params.angle.to_radians().sin(),
     );
-    let smeared = RgbImage::from_fn(small.width(), small.height(), |x, y| {
+    let smeared = parallel::from_fn(small.width(), small.height(), |x, y| {
         let (x, y) = (x as f32, y as f32);
         let mut sum = [0f32; 3];
         for i in 0..samples {
@@ -198,7 +199,7 @@ pub fn aberration(image: &RgbImage, params: Aberration) -> RgbImage {
     }
     let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
     let scales = [1.0 + params.amount, 1.0, 1.0 - params.amount];
-    RgbImage::from_fn(width, height, |x, y| {
+    parallel::from_fn(width, height, |x, y| {
         let mut pixel = Rgb([0; 3]);
         for (channel, scale) in scales.iter().enumerate() {
             let sx = cx + (x as f32 - cx) / scale;
@@ -255,7 +256,7 @@ pub fn grain(image: &RgbImage, params: Grain, seed: u64) -> RgbImage {
         .collect();
     let strength = f32::from(params.strength.min(100)) / 100.0 * 80.0;
     let mut grained = image.clone();
-    for (x, y, pixel) in grained.enumerate_pixels_mut() {
+    parallel::for_each_pixel(&mut grained, |x, y, pixel| {
         let n = noise[((y / dot) * gw + x / dot) as usize];
         let light = f32::from(brightness(*pixel)) / 255.0;
         // Little grain in the deep shadows and the blown highlights.
@@ -264,7 +265,7 @@ pub fn grain(image: &RgbImage, params: Grain, seed: u64) -> RgbImage {
             let value = f32::from(pixel[channel]) + n[channel] * strength * weight;
             pixel[channel] = value.round().clamp(0.0, 255.0) as u8;
         }
-    }
+    });
     grained
 }
 
@@ -299,7 +300,7 @@ pub fn fade(image: &RgbImage, params: Fade) -> RgbImage {
     let tint = params.tint.0.0.map(f32::from);
     let tint_amount = f32::from(params.tint_amount.min(100)) / 100.0;
     let mut faded = image.clone();
-    for pixel in faded.pixels_mut() {
+    parallel::for_each_pixel(&mut faded, |_, _, pixel| {
         let grey = f32::from(brightness(*pixel));
         for channel in 0..3 {
             let value = f32::from(pixel[channel]);
@@ -309,7 +310,7 @@ pub fn fade(image: &RgbImage, params: Fade) -> RgbImage {
             let tinted = lifted + (tint[channel] - lifted) * tint_amount * (1.0 - lifted / 255.0);
             pixel[channel] = tinted.round().clamp(0.0, 255.0) as u8;
         }
-    }
+    });
     faded
 }
 
@@ -340,13 +341,13 @@ pub fn vignette(image: &RgbImage, params: Vignette) -> RgbImage {
     let start = f32::from(params.start.min(100)) / 100.0;
     let strength = f32::from(params.strength.min(100)) / 100.0;
     let mut shaded = image.clone();
-    for (x, y, pixel) in shaded.enumerate_pixels_mut() {
+    parallel::for_each_pixel(&mut shaded, |x, y, pixel| {
         let (dx, dy) = (x as f32 - cx, y as f32 - cy);
         let distance = (dx * dx + dy * dy).sqrt() / corner;
         let t = ((distance - start) / (1.0 - start).max(0.01)).clamp(0.0, 1.0);
         let keep = 1.0 - strength * t * t;
         *pixel = Rgb(pixel.0.map(|v| (f32::from(v) * keep).round() as u8));
-    }
+    });
     shaded
 }
 
@@ -387,7 +388,7 @@ pub fn leak(image: &RgbImage, params: Leak, seed: u64) -> RgbImage {
     let strength = f32::from(params.strength.min(100)) / 100.0;
     let color = params.color.0.0.map(f32::from);
     let mut lit = image.clone();
-    for (x, y, pixel) in lit.enumerate_pixels_mut() {
+    parallel::for_each_pixel(&mut lit, |x, y, pixel| {
         let (dx, dy) = (x as f32 - ox, y as f32 - oy);
         let distance = (dx * dx + dy * dy).sqrt() / reach.max(1.0);
         let glow = (1.0 - distance).clamp(0.0, 1.0);
@@ -398,7 +399,7 @@ pub fn leak(image: &RgbImage, params: Leak, seed: u64) -> RgbImage {
                 pixel[channel] = value.round().clamp(0.0, 255.0) as u8;
             }
         }
-    }
+    });
     lit
 }
 
@@ -435,7 +436,7 @@ pub fn bloom(image: &RgbImage, params: Bloom) -> RgbImage {
     let scale = small.width() as f32 / REFERENCE_WIDTH as f32;
     let threshold = f32::from(params.threshold);
     // The lights alone, the rest black, then blurred.
-    let lights = RgbImage::from_fn(small.width(), small.height(), |x, y| {
+    let lights = parallel::from_fn(small.width(), small.height(), |x, y| {
         let pixel = *small.get_pixel(x, y);
         let light = f32::from(brightness(pixel));
         if light >= threshold {
@@ -481,13 +482,13 @@ fn enlarged(small: &RgbImage, width: u32, height: u32) -> RgbImage {
 fn blend_over(under: &RgbImage, over: &RgbImage, blend: Blend, mix: u8) -> RgbImage {
     let mix = f32::from(mix.min(100)) / 100.0;
     let mut result = under.clone();
-    for (x, y, pixel) in result.enumerate_pixels_mut() {
+    parallel::for_each_pixel(&mut result, |x, y, pixel| {
         let top = over.get_pixel(x, y);
         for channel in 0..3 {
             let value = blend.apply(f32::from(pixel[channel]), f32::from(top[channel]), mix);
             pixel[channel] = value.round().clamp(0.0, 255.0) as u8;
         }
-    }
+    });
     result
 }
 

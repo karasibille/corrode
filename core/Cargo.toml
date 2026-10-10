@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg"] }
+rayon = "1"
 postcard = { version = "1", features = ["use-std"] }
 rawler = "0.8"
 serde = { version = "1.0.229", features = ["derive"] }
