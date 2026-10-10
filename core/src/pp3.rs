@@ -1,13 +1,15 @@
 //! RawTherapee processing profiles (`.pp3` sidecar files).
 //!
 //! A `.pp3` is an INI-like key file written next to the image
-//! (`DSCF1234.RAF.pp3`). corrode only reads and writes the marks of the
-//! `[General]` section (`Rank`, `ColorLabel`, `InTrash`); every other line
-//! is kept byte for byte, so RawTherapee's settings are never altered.
+//! (`DSCF1234.RAF.pp3`). corrode reads and writes the marks of the
+//! `[General]` section (`Rank`, `ColorLabel`, `InTrash`), and can set a
+//! key or replace a whole section, for presets; every other line is kept
+//! byte for byte, so RawTherapee's settings are never altered by accident.
 
 use std::fmt;
 use std::fs::{self, Permissions};
 use std::io::{self, Write};
+use std::ops::Range;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -118,6 +120,47 @@ impl Profile {
             })
     }
 
+    /// The `(key, value)` pairs of a section, in file order.
+    pub fn section_entries(&self, section: &str) -> Vec<(&str, &str)> {
+        self.entries(section)
+            .map(|(_, key, value)| (key, value))
+            .collect()
+    }
+
+    /// The names of the sections, in file order, each once.
+    pub fn section_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for line in &self.lines {
+            if let Some(Line::Section(name)) = classify(line)
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// The line ranges of the sections called `wanted`: from the header to
+    /// the line before the next header, blank lines after it included.
+    fn section_ranges(&self, wanted: &str) -> Vec<Range<usize>> {
+        let mut ranges = Vec::new();
+        let mut start = None;
+        for (index, line) in self.lines.iter().enumerate() {
+            if let Some(Line::Section(name)) = classify(line) {
+                if let Some(start) = start.take() {
+                    ranges.push(start..index);
+                }
+                if name == wanted {
+                    start = Some(index);
+                }
+            }
+        }
+        if let Some(start) = start {
+            ranges.push(start..self.lines.len());
+        }
+        ranges
+    }
+
     fn general_entries(&self) -> impl Iterator<Item = (usize, &str, &str)> {
         self.entries(GENERAL)
     }
@@ -180,16 +223,26 @@ impl Profile {
         self.set(IN_TRASH, &marks.in_trash.to_string(), true);
     }
 
+    /// Sets a key of a section, adding the key at the end of the section,
+    /// and the section at the end of the file, if they are missing.
+    pub fn set_in(&mut self, section: &str, key: &str, value: &str) {
+        self.set_value(section, key, value, true);
+    }
+
     fn set(&mut self, key: &str, value: &str, add_if_missing: bool) {
+        self.set_value(GENERAL, key, value, add_if_missing);
+    }
+
+    fn set_value(&mut self, section: &str, key: &str, value: &str, add_if_missing: bool) {
         let indexes: Vec<usize> = self
-            .general_entries()
+            .entries(section)
             .filter(|(_, k, _)| *k == key)
             .map(|(index, _, _)| index)
             .collect();
 
         if indexes.is_empty() {
             if add_if_missing {
-                let at = self.general_insertion_point();
+                let at = self.insertion_point(section);
                 let line = format!("{key}={value}{}", self.newline());
                 self.lines.insert(at, line);
             }
@@ -202,13 +255,12 @@ impl Profile {
         }
     }
 
-    /// Index right after the last entry of `[General]`, appending the
+    /// Index right after the last entry of a section, appending the
     /// section at the end of the file if there is none.
-    fn general_insertion_point(&mut self) -> usize {
-        let header = self
-            .lines
-            .iter()
-            .position(|line| matches!(classify(line), Some(Line::Section(GENERAL))));
+    fn insertion_point(&mut self, section: &str) -> usize {
+        let header = self.lines.iter().position(
+            |line| matches!(classify(line), Some(Line::Section(name)) if name == section),
+        );
         let Some(header) = header else {
             let newline = self.newline();
             if let Some(last) = self.lines.last_mut() {
@@ -217,7 +269,7 @@ impl Profile {
                 }
                 self.lines.push(newline.to_owned());
             }
-            self.lines.push(format!("[{GENERAL}]{newline}"));
+            self.lines.push(format!("[{section}]{newline}"));
             return self.lines.len();
         };
 
@@ -230,6 +282,44 @@ impl Profile {
             }
         }
         at
+    }
+
+    /// Replaces a section by the one of `source`, which is taken whole, the
+    /// keys the target had and the source has not included: they go back to
+    /// RawTherapee's defaults. A section the source lacks is removed. The
+    /// section stays where it was, or goes to the end if it was missing;
+    /// the target's line endings are used.
+    pub fn replace_section(&mut self, name: &str, source: &Profile) {
+        let newline = self.newline();
+        let new_lines: Vec<String> = source
+            .section_ranges(name)
+            .first()
+            .map(|range| {
+                source.lines[range.clone()]
+                    .iter()
+                    .map(|line| format!("{}{newline}", line.trim_end_matches(['\r', '\n'])))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let ranges = self.section_ranges(name);
+        let at = ranges.first().map(|range| range.start);
+        for range in ranges.into_iter().rev() {
+            self.lines.drain(range);
+        }
+        match at {
+            Some(at) => {
+                self.lines.splice(at..at, new_lines);
+            }
+            None => {
+                if let Some(last) = self.lines.last_mut()
+                    && !last.ends_with('\n')
+                {
+                    last.push_str(newline);
+                }
+                self.lines.extend(new_lines);
+            }
+        }
     }
 
     /// Line ending used by the file, `\n` by default.
@@ -436,6 +526,60 @@ CA=true
         assert_eq!(
             profile.to_string(),
             "[General]\nRank=0\nColorLabel=0\nInTrash=false\n"
+        );
+    }
+
+    #[test]
+    fn set_in_changes_adds_and_creates() {
+        let mut profile = parse("[Exposure]\nContrast=10\n\n[Vibrance]\nEnabled=true\n");
+        profile.set_in("Exposure", "Contrast", "20");
+        profile.set_in("Exposure", "Saturation", "5");
+        profile.set_in("Dehaze", "Enabled", "true");
+        assert_eq!(
+            profile.to_string(),
+            "[Exposure]\nContrast=20\nSaturation=5\n\n[Vibrance]\nEnabled=true\n\n[Dehaze]\nEnabled=true\n"
+        );
+    }
+
+    #[test]
+    fn replace_section_takes_the_source_whole_and_keeps_the_rest() {
+        let mut target =
+            parse("[General]\nRank=3\n\n[Vibrance]\nEnabled=false\nPastels=1\n\n[Crop]\nX=5\n");
+        let source = parse("[Vibrance]\nEnabled=true\nSaturated=-27\n\n[Crop]\nX=0\n");
+        target.replace_section("Vibrance", &source);
+        assert_eq!(
+            target.to_string(),
+            "[General]\nRank=3\n\n[Vibrance]\nEnabled=true\nSaturated=-27\n\n[Crop]\nX=5\n"
+        );
+        assert_eq!(target.get("Vibrance", "Pastels"), None);
+    }
+
+    #[test]
+    fn replace_section_removes_what_the_source_lacks_and_appends_what_the_target_lacks() {
+        let mut target = parse("[Dehaze]\nEnabled=true\n\n[Crop]\nX=5\n");
+        let source = parse("[Vibrance]\nEnabled=true\n");
+        target.replace_section("Dehaze", &source);
+        assert_eq!(target.to_string(), "[Crop]\nX=5\n");
+        target.replace_section("Vibrance", &source);
+        assert_eq!(
+            target.to_string(),
+            "[Crop]\nX=5\n[Vibrance]\nEnabled=true\n"
+        );
+        assert_eq!(target.section_names(), ["Crop", "Vibrance"]);
+    }
+
+    #[test]
+    fn replace_section_uses_the_line_endings_of_the_target() {
+        let mut target = parse("[Crop]\r\nX=5\r\n\r\n[Vibrance]\r\nEnabled=false\r\n");
+        let source = parse("[Vibrance]\nEnabled=true\nPastels=3");
+        target.replace_section("Vibrance", &source);
+        assert_eq!(
+            target.to_string(),
+            "[Crop]\r\nX=5\r\n\r\n[Vibrance]\r\nEnabled=true\r\nPastels=3\r\n"
+        );
+        assert_eq!(
+            target.section_entries("Vibrance"),
+            [("Enabled", "true"), ("Pastels", "3")]
         );
     }
 
