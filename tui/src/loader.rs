@@ -1,199 +1,69 @@
-//! Decoding in background threads, so that the interface never waits.
+//! Running jobs in background threads, so that the interface never
+//! waits. Any kind of job: the loader takes the function that runs one
+//! and the channel its results go through.
 //!
-//! The application says which jobs it wants, most urgent first, every time
-//! the current shot changes; jobs no longer wanted are dropped before they
-//! start. Results come back through a channel. A small cache shared by the
-//! threads keeps the last previews and the shooting information, so that a
-//! preview decoded to be shown is not decoded again to be assessed.
+//! The application says which jobs it wants, most urgent first, every
+//! time its needs change; jobs no longer wanted are dropped before they
+//! start. A job pushed explicitly runs first and is never dropped.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
+use std::hash::Hash;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
-use corrode_core::cache::Cache as MetaCache;
-use corrode_core::debanding::{self, Pattern};
-use corrode_core::exif::{Exif, Head};
-use corrode_core::marks::Marks;
-use corrode_core::pairing::Shot;
-use corrode_core::picture::{self, Picture};
-use corrode_core::{banding, rawtherapee, sharpness};
-use std::path::PathBuf;
-
-use crate::culling::Assessment;
-use image::DynamicImage;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Job {
-    /// What the head of the files tells: shooting information, including
-    /// the time used to find bursts, thumbnail and marks.
-    Head(usize),
-    Preview(usize),
-    Full(usize),
-    /// Sharpness around the focus point, and light bands, from the preview.
-    Assess(usize),
-    /// Removes the light bands of the RAW into a DNG next to it.
-    Deband(usize),
-}
-
-impl Job {
-    fn index_mut(&mut self) -> &mut usize {
-        match self {
-            Job::Head(i) | Job::Preview(i) | Job::Full(i) | Job::Assess(i) | Job::Deband(i) => i,
-        }
-    }
-
-    fn index(self) -> usize {
-        let mut job = self;
-        *job.index_mut()
-    }
-}
-
-/// Counts the changes of the list of shots: a result of a job started
-/// before a change speaks of the old indices.
-pub type Epoch = u64;
-
-pub enum Loaded {
-    Head {
-        index: usize,
-        exif: Result<Exif, String>,
-        thumbnail: Option<DynamicImage>,
-        marks: Result<Marks, String>,
-    },
-    Assessment {
-        index: usize,
-        assessment: Option<Assessment>,
-    },
-    Debanded {
-        /// The RAW corrected: the list may have changed since.
-        raw: PathBuf,
-        /// The DNG written and what was removed, or why not.
-        result: Result<(PathBuf, Box<Pattern>), String>,
-    },
-    Picture {
-        job: Job,
-        picture: Result<Arc<Picture>, String>,
-        elapsed: Duration,
-    },
-}
-
-#[derive(Default)]
-struct Queue {
+struct Queue<J> {
     /// Jobs asked for explicitly, run first and never dropped.
-    pinned: VecDeque<Job>,
-    waiting: VecDeque<Job>,
-    running: HashSet<Job>,
-    epoch: Epoch,
+    pinned: VecDeque<J>,
+    waiting: VecDeque<J>,
+    running: HashSet<J>,
     closed: bool,
 }
 
-/// Previews kept for the assessment of a burst, and shooting information
-/// kept for the focus point.
-const CACHED_PREVIEWS: usize = 8;
-
-#[derive(Default)]
-struct Cache {
-    /// The last decoded previews, oldest first.
-    previews: VecDeque<(usize, Arc<Picture>)>,
-    exifs: HashMap<usize, Exif>,
-}
-
-impl Cache {
-    fn preview(&self, index: usize) -> Option<Arc<Picture>> {
-        self.previews
-            .iter()
-            .find(|(i, _)| *i == index)
-            .map(|(_, picture)| Arc::clone(picture))
-    }
-
-    fn keep_preview(&mut self, index: usize, picture: &Arc<Picture>) {
-        self.previews.retain(|(i, _)| *i != index);
-        if self.previews.len() >= CACHED_PREVIEWS {
-            self.previews.pop_front();
+impl<J> Default for Queue<J> {
+    fn default() -> Queue<J> {
+        Queue {
+            pinned: VecDeque::new(),
+            waiting: VecDeque::new(),
+            running: HashSet::new(),
+            closed: false,
         }
-        self.previews.push_back((index, Arc::clone(picture)));
     }
 }
 
-pub struct Loader {
-    queue: Arc<(Mutex<Queue>, Condvar)>,
-    shots: Arc<RwLock<Vec<Shot>>>,
-    cache: Arc<Mutex<Cache>>,
+pub struct Loader<J> {
+    queue: Arc<(Mutex<Queue<J>>, Condvar)>,
 }
 
-impl Loader {
-    pub fn new(
-        shots: Vec<Shot>,
+impl<J: Copy + Eq + Hash + Send + 'static> Loader<J> {
+    /// Starts `threads` threads that run the jobs with `run` and send
+    /// what comes out to `results`. They stop when the loader is dropped
+    /// or the results are no longer received.
+    pub fn new<R: Send + 'static>(
         threads: usize,
-        results: Sender<(Epoch, Loaded)>,
-        meta: Arc<Mutex<MetaCache>>,
-    ) -> Loader {
+        results: Sender<R>,
+        run: impl Fn(J) -> R + Send + Sync + 'static,
+    ) -> Loader<J> {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
-        let shots = Arc::new(RwLock::new(shots));
-        let cache = Arc::new(Mutex::new(Cache::default()));
+        let run = Arc::new(run);
         for _ in 0..threads {
-            let (queue, shots, results) = (Arc::clone(&queue), Arc::clone(&shots), results.clone());
-            let (cache, meta) = (Arc::clone(&cache), Arc::clone(&meta));
+            let (queue, results, run) = (Arc::clone(&queue), results.clone(), Arc::clone(&run));
             thread::spawn(move || {
-                while let Some((job, epoch)) = next_job(&queue) {
-                    let shot = shots.read().unwrap()[job.index()].clone();
-                    let loaded = run(&shot, &cache, &meta, job);
+                while let Some(job) = next_job(&queue) {
+                    let result = run(job);
                     queue.0.lock().unwrap().running.remove(&job);
-                    if results.send((epoch, loaded)).is_err() {
+                    if results.send(result).is_err() {
                         break;
                     }
                 }
             });
         }
-        Loader {
-            queue,
-            shots,
-            cache,
-        }
+        Loader { queue }
     }
 
-    /// The epoch of the list of shots: results from an older one are stale.
-    pub fn epoch(&self) -> Epoch {
-        self.queue.0.lock().unwrap().epoch
-    }
-
-    /// Adds a shot at `index`, such as a DNG just written: the jobs
-    /// waiting are dropped, the pinned ones follow their shot, and the
-    /// results of the running ones will be stale.
-    pub fn insert(&self, index: usize, shot: Shot) {
-        let (lock, wake) = &*self.queue;
-        let mut queue = lock.lock().unwrap();
-        self.shots.write().unwrap().insert(index, shot);
-        for job in &mut queue.pinned {
-            let i = job.index_mut();
-            if *i >= index {
-                *i += 1;
-            }
-        }
-        self.change(&mut queue);
-        wake.notify_all();
-    }
-
-    /// Replaces the shot at `index` by a new version of its files, such as
-    /// a DNG written again: what was loaded of it is forgotten.
-    pub fn replace(&self, index: usize, shot: Shot) {
-        let (lock, wake) = &*self.queue;
-        let mut queue = lock.lock().unwrap();
-        self.shots.write().unwrap()[index] = shot;
-        self.change(&mut queue);
-        wake.notify_all();
-    }
-
-    fn change(&self, queue: &mut Queue) {
-        queue.waiting.clear();
-        queue.epoch += 1;
-        *self.cache.lock().unwrap() = Cache::default();
-    }
-
-    /// Adds a job that must run whatever the viewer asks for next, such as
-    /// a correction the user started.
-    pub fn push(&self, job: Job) {
+    /// Adds a job that must run whatever is asked for next, such as a
+    /// correction the user started.
+    pub fn push(&self, job: J) {
         let (lock, wake) = &*self.queue;
         let mut queue = lock.lock().unwrap();
         if !queue.running.contains(&job) && !queue.pinned.contains(&job) {
@@ -202,12 +72,12 @@ impl Loader {
         wake.notify_all();
     }
 
-    /// Replaces the waiting jobs by these ones, in this order. Jobs already
-    /// running are not started twice.
-    pub fn want(&self, jobs: impl IntoIterator<Item = Job>) {
+    /// Replaces the waiting jobs by these ones, in this order. Jobs
+    /// already running are not started twice.
+    pub fn want(&self, jobs: impl IntoIterator<Item = J>) {
         let (lock, wake) = &*self.queue;
         let mut queue = lock.lock().unwrap();
-        let jobs: VecDeque<Job> = jobs
+        let jobs: VecDeque<J> = jobs
             .into_iter()
             .filter(|job| !queue.running.contains(job))
             .collect();
@@ -216,7 +86,7 @@ impl Loader {
     }
 }
 
-impl Drop for Loader {
+impl<J> Drop for Loader<J> {
     fn drop(&mut self) {
         let (lock, wake) = &*self.queue;
         lock.lock().unwrap().closed = true;
@@ -224,9 +94,8 @@ impl Drop for Loader {
     }
 }
 
-/// Waits for the most urgent job, with the epoch it was started in, or
-/// `None` once the loader is dropped.
-fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<(Job, Epoch)> {
+/// Waits for the most urgent job, or `None` once the loader is dropped.
+fn next_job<J: Copy + Eq + Hash>(queue: &(Mutex<Queue<J>>, Condvar)) -> Option<J> {
     let (lock, wake) = queue;
     let mut queue = lock.lock().unwrap();
     loop {
@@ -239,101 +108,72 @@ fn next_job(queue: &(Mutex<Queue>, Condvar)) -> Option<(Job, Epoch)> {
             .or_else(|| queue.waiting.pop_front())
         {
             queue.running.insert(job);
-            return Some((job, queue.epoch));
+            return Some(job);
         }
         queue = wake.wait(queue).unwrap();
     }
 }
 
-/// Runs a job on its shot.
-fn run(shot: &Shot, cache: &Mutex<Cache>, meta: &Mutex<MetaCache>, job: Job) -> Loaded {
-    let start = Instant::now();
-    // The preview of the shot, from the cache or decoded and cached.
-    let preview = |index: usize| -> Result<Arc<Picture>, String> {
-        if let Some(picture) = cache.lock().unwrap().preview(index) {
-            return Ok(picture);
-        }
-        let picture = picture::preview(shot)
-            .map(Arc::new)
-            .map_err(|err| err.to_string())?;
-        cache.lock().unwrap().keep_preview(index, &picture);
-        Ok(picture)
-    };
-    let loaded = |job, picture| Loaded::Picture {
-        job,
-        picture,
-        elapsed: start.elapsed(),
-    };
-    match job {
-        Job::Head(index) => {
-            // The cache spares reading the file when it has not changed.
-            let cached = meta.lock().unwrap().get(shot);
-            let (exif, thumbnail) = match cached {
-                Some((exif, thumbnail)) => (Ok(exif), thumbnail),
-                None => {
-                    let head = Head::read(shot);
-                    let exif = head
-                        .as_ref()
-                        .map_err(|err| err.to_string())
-                        .and_then(|head| head.exif().map_err(|err| err.to_string()));
-                    let thumbnail = head
-                        .ok()
-                        .and_then(|head| head.thumbnail())
-                        .or_else(|| picture::thumbnail(shot));
-                    if let Ok(exif) = &exif {
-                        meta.lock().unwrap().insert(shot, exif, thumbnail.as_ref());
-                    }
-                    (exif, thumbnail)
-                }
-            };
-            if let Ok(exif) = &exif {
-                cache.lock().unwrap().exifs.insert(index, exif.clone());
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn jobs_run_in_order_and_results_come_back() {
+        let (tx, rx) = mpsc::channel();
+        let loader = Loader::new(1, tx, |job: u32| job * 10);
+        loader.want([1, 2, 3]);
+        let mut results: Vec<u32> = (0..3)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        results.sort_unstable();
+        assert_eq!(results, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn a_pushed_job_runs_before_the_wanted_ones() {
+        let (tx, rx) = mpsc::channel();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate_rx);
+        // The first job waits at the gate, so that the queue fills up.
+        let loader = Loader::new(1, tx, move |job: u32| {
+            if job == 0 {
+                let _ = gate.lock().unwrap().recv();
             }
-            Loaded::Head {
-                index,
-                exif,
-                thumbnail,
-                marks: rawtherapee::read_marks(shot).map_err(|err| err.to_string()),
+            job
+        });
+        loader.want([0, 1, 2]);
+        thread::sleep(Duration::from_millis(50));
+        loader.push(9);
+        gate_tx.send(()).unwrap();
+        let results: Vec<u32> = (0..4)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        assert_eq!(results, vec![0, 9, 1, 2]);
+    }
+
+    #[test]
+    fn wanting_again_drops_the_jobs_not_started() {
+        let (tx, rx) = mpsc::channel();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate_rx);
+        let loader = Loader::new(1, tx, move |job: u32| {
+            if job == 0 {
+                let _ = gate.lock().unwrap().recv();
             }
-        }
-        Job::Preview(index) => loaded(job, preview(index)),
-        Job::Full(_) => loaded(
-            job,
-            picture::full(shot)
-                .map(Arc::new)
-                .map_err(|err| err.to_string()),
-        ),
-        Job::Deband(_) => {
-            let result = match shot.raw.as_deref() {
-                None => Err("this shot has no RAW file".to_owned()),
-                Some(raw) => {
-                    let dng = debanding::output_path(raw);
-                    debanding::to_dng(raw, &dng)
-                        .map_err(|err| err.to_string())
-                        .and_then(|pattern| {
-                            rawtherapee::copy_sidecar(raw, &dng)
-                                .map_err(|err| format!("{}: {err}", dng.display()))?;
-                            Ok((dng, Box::new(pattern)))
-                        })
-                }
-            };
-            Loaded::Debanded {
-                raw: shot.raw.clone().unwrap_or_default(),
-                result,
-            }
-        }
-        Job::Assess(index) => {
-            let focus = match cache.lock().unwrap().exifs.get(&index) {
-                Some(exif) => exif.focus_point,
-                None => corrode_core::exif::read(shot)
-                    .ok()
-                    .and_then(|exif| exif.focus_point),
-            };
-            let assessment = preview(index).ok().map(|preview| Assessment {
-                sharpness: sharpness::score(&preview.image, focus),
-                banded: banding::analyze(&preview.image).is_some_and(|bands| bands.is_banded()),
-            });
-            Loaded::Assessment { index, assessment }
-        }
+            job
+        });
+        loader.want([0, 1, 2]);
+        thread::sleep(Duration::from_millis(50));
+        loader.want([5]);
+        gate_tx.send(()).unwrap();
+        let results: Vec<u32> = (0..2)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        assert_eq!(results, vec![0, 5]);
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     }
 }

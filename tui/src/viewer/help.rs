@@ -6,7 +6,7 @@ use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 
 use super::Viewer;
-use crate::loader::Job;
+use crate::jobs::Job;
 
 impl Viewer {
     /// The full help, with every key and what the marks mean, laid out
@@ -134,7 +134,7 @@ impl Viewer {
         let ms = |duration: Option<&Duration>| {
             duration.map_or("–".to_owned(), |d| format!("{} ms", d.as_millis()))
         };
-        let decode = self.timings.get(&Job::Preview(self.app.index));
+        let decode = self.timings.get(&Job::Preview(self.id(self.app.index)));
         let draw = self.shown.as_ref().map(|shown| &shown.elapsed);
         lines.push(Line::default());
         lines.push(

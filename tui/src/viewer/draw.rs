@@ -95,7 +95,10 @@ impl Viewer {
     fn draw_picture(&mut self, frame: &mut Frame, area: Rect) {
         let index = self.app.index;
         let wanted = match self.app.mode {
-            Mode::Fit => self.previews.get(&index).map(|p| (p.clone(), None)),
+            Mode::Fit => self
+                .previews
+                .get(&self.id(index))
+                .map(|p| (p.clone(), None)),
             Mode::Zoom { x, y, scale } => self.full_picture().map(|picture| {
                 let size = (picture.image.width(), picture.image.height());
                 (

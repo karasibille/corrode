@@ -212,8 +212,8 @@ impl Viewer {
         for index in kept {
             match selection::send(&self.shots[index], &folder) {
                 Ok(shot) => {
-                    self.shots[index] = shot.clone();
-                    self.loader.replace(index, shot);
+                    // Moved, not changed: what was loaded still holds.
+                    self.replace_shot(index, shot, false);
                     sent += 1;
                 }
                 Err(err) => {
@@ -247,7 +247,7 @@ impl Viewer {
             )),
             (None, false) => Err(format!("{stem}: not assessed yet, try again in a moment")),
             _ => {
-                self.loader.push(crate::loader::Job::Deband(index));
+                self.loader.push(crate::jobs::Job::Deband(self.id(index)));
                 Ok(format!("{stem}: removing light bands in the background…"))
             }
         });

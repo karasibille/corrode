@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use corrode_core::bursts;
@@ -30,7 +30,8 @@ use ratatui_image::protocol::Protocol;
 use crate::app::{App, Command, Filter, Mode, Time, burst_around};
 use crate::culling::{self, Assessment, Progress};
 use crate::encoder::{Encoded, Encoder, Request};
-use crate::loader::{Epoch, Job, Loaded, Loader};
+use crate::jobs::{self, Job, Loaded, Registry, SharedRegistry, ShotId, Version};
+use crate::loader::Loader;
 
 /// Shots decoded ahead on each side of the current one.
 const PRELOAD: usize = 2;
@@ -72,8 +73,18 @@ impl ShotState {
 
 pub struct Viewer {
     dir: PathBuf,
-    /// Sorted by stem; the loader has its own copy, kept the same.
+    /// Sorted by stem, by position on screen; the registry has the same
+    /// shots by id.
     shots: Vec<Shot>,
+    /// The id of the shot at each position.
+    ids: Vec<ShotId>,
+    /// The position of each shot, by id.
+    positions: Vec<usize>,
+    /// The version of each shot's files, by id: results of jobs run on
+    /// an older version are dropped.
+    versions: Vec<Version>,
+    /// The shots as the loader's threads see them.
+    registry: SharedRegistry,
     states: Vec<ShotState>,
     /// When each shot was taken, as far as read: bursts come from it.
     times: Vec<Time>,
@@ -83,8 +94,10 @@ pub struct Viewer {
     cache_saved: bool,
     filter: Filter,
     pub app: App,
-    loader: Loader,
-    loaded: Receiver<(Epoch, Loaded)>,
+    loader: Loader<Job>,
+    /// What the loader's threads keep between jobs.
+    loader_cache: Arc<Mutex<jobs::Cache>>,
+    loaded: Receiver<Loaded>,
     encoder: Encoder,
     encoded: Receiver<Encoded>,
     /// Used for the thumbnails, which are small enough to encode here.
@@ -92,12 +105,12 @@ pub struct Viewer {
     font: FontSize,
     protocol_name: String,
     thumbnail_size: Size,
-    previews: HashMap<usize, Result<Arc<Picture>, String>>,
+    previews: HashMap<ShotId, Result<Arc<Picture>, String>>,
     /// The current shot's, and its neighbours' and the lately seen ones'
     /// while zoomed.
-    fulls: HashMap<usize, Result<Arc<Picture>, String>>,
+    fulls: HashMap<ShotId, Result<Arc<Picture>, String>>,
     /// Shots seen zoomed, the latest first, at most `RECENT_FULL`.
-    recent: VecDeque<usize>,
+    recent: VecDeque<ShotId>,
     timings: HashMap<Job, Duration>,
     /// The shot and burst the jobs were last scheduled for, and whether
     /// it was zoomed.
@@ -133,13 +146,26 @@ impl Viewer {
         // Thumbnails are 4:3, the shape of the sensor.
         let thumbnail_columns = (u32::from(THUMB_ROWS) * u32::from(font.height) * 4 / 3)
             .div_ceil(u32::from(font.width.max(1)));
+        let registry = Arc::new(RwLock::new(Registry::new(shots.iter().cloned())));
+        let (loader, loader_cache) = jobs::spawn(
+            Arc::clone(&registry),
+            thread_count(),
+            loaded_tx,
+            Arc::clone(&cache),
+        );
+        let count = u32::try_from(shots.len()).expect("fewer than four billion shots");
         Viewer {
             dir,
+            ids: (0..count).map(ShotId).collect(),
+            positions: (0..shots.len()).collect(),
+            versions: vec![0; shots.len()],
+            registry,
             states: shots.iter().map(|_| ShotState::default()).collect(),
             times: vec![Time::Unknown; shots.len()],
             filter: Filter::All,
             app: App::new(shots.len()),
-            loader: Loader::new(shots.clone(), thread_count(), loaded_tx, Arc::clone(&cache)),
+            loader,
+            loader_cache,
             cache,
             cache_saved: false,
             loaded,
@@ -169,17 +195,47 @@ impl Viewer {
         }
     }
 
+    /// The id of the shot at a position on screen.
+    fn id(&self, position: usize) -> ShotId {
+        self.ids[position]
+    }
+
+    /// The position on screen of a shot.
+    fn position(&self, id: ShotId) -> usize {
+        self.positions[id.0 as usize]
+    }
+
     /// Whether the full picture of a shot is kept: zoomed, the neighbours
     /// and the lately seen shots, for the next comparison.
-    fn keeps_full(&self, i: usize) -> bool {
+    fn keeps_full(&self, id: ShotId) -> bool {
         matches!(self.app.mode, Mode::Zoom { .. })
-            && (i.abs_diff(self.app.index) <= KEEP_FULL || self.recent.contains(&i))
+            && (self.position(id).abs_diff(self.app.index) <= KEEP_FULL
+                || self.recent.contains(&id))
     }
 
     fn full_picture(&self) -> Option<&Arc<Picture>> {
-        match self.fulls.get(&self.app.index) {
+        match self.fulls.get(&self.id(self.app.index)) {
             Some(Ok(picture)) => Some(picture),
             _ => None,
+        }
+    }
+
+    /// Gives a shot new files: moved ones keep what was loaded, written
+    /// again ones (`reload`) drop it and are loaded afresh.
+    fn replace_shot(&mut self, position: usize, shot: Shot, reload: bool) {
+        let id = self.id(position);
+        self.shots[position] = shot.clone();
+        let version = self.registry.write().unwrap().replace(id, shot, reload);
+        if reload {
+            self.versions[id.0 as usize] = version;
+            self.loader_cache.lock().unwrap().forget(id);
+            self.states[position] = ShotState::default();
+            self.times[position] = Time::Unknown;
+            self.previews.remove(&id);
+            self.fulls.remove(&id);
+            self.recent.retain(|&i| i != id);
+            self.scheduled = None;
+            self.cache_saved = false;
         }
     }
 
@@ -217,19 +273,22 @@ impl Viewer {
         }
         self.scheduled = scheduled;
 
-        self.previews.retain(|&i, _| i.abs_diff(index) <= KEEP);
+        let id = self.id(index);
+        let positions = &self.positions;
+        self.previews
+            .retain(|i, _| positions[i.0 as usize].abs_diff(index) <= KEEP);
         if zoomed {
-            self.recent.retain(|&i| i != index);
-            self.recent.push_front(index);
+            self.recent.retain(|&i| i != id);
+            self.recent.push_front(id);
             self.recent.truncate(RECENT_FULL);
         } else {
             self.recent.clear();
         }
-        let kept: Vec<usize> = self
+        let kept: Vec<ShotId> = self
             .fulls
             .keys()
             .copied()
-            .filter(|&i| i == index || self.keeps_full(i))
+            .filter(|&i| i == id || self.keeps_full(i))
             .collect();
         self.fulls.retain(|i, _| kept.contains(i));
 
@@ -243,30 +302,31 @@ impl Viewer {
         // Zoomed, the full picture is what is on screen: it comes first,
         // and the neighbours' full pictures are prepared for the next
         // comparison.
-        let mut jobs = vec![Job::Head(index), Job::Preview(index)];
+        let at = |position: usize| self.ids[position];
+        let mut jobs = vec![Job::Head(id), Job::Preview(id)];
         if zoomed {
-            jobs.insert(1, Job::Full(index));
+            jobs.insert(1, Job::Full(id));
             let near = (1..=KEEP_FULL).flat_map(|distance| {
                 [
                     index.checked_add(distance).filter(|&i| i <= last),
                     index.checked_sub(distance),
                 ]
             });
-            jobs.extend(near.flatten().map(Job::Full));
+            jobs.extend(near.flatten().map(|i| Job::Full(at(i))));
         }
-        jobs.extend(neighbours.flatten().map(Job::Preview));
+        jobs.extend(neighbours.flatten().map(|i| Job::Preview(at(i))));
         if !zoomed {
-            jobs.push(Job::Full(index));
+            jobs.push(Job::Full(id));
         }
-        jobs.extend(burst.map(Job::Assess));
+        jobs.extend(burst.map(|i| Job::Assess(at(i))));
         let mut others: Vec<usize> = (0..self.shots.len()).filter(|&i| i != index).collect();
         others.sort_by_key(|&i| i.abs_diff(index));
-        jobs.extend(others.into_iter().map(Job::Head));
+        jobs.extend(others.into_iter().map(|i| Job::Head(at(i))));
         jobs.retain(|job| match *job {
-            Job::Head(i) => self.times[i] == Time::Unknown,
+            Job::Head(i) => self.times[self.position(i)] == Time::Unknown,
             Job::Preview(i) => !self.previews.contains_key(&i),
             Job::Full(i) => !self.fulls.contains_key(&i),
-            Job::Assess(i) => self.states[i].assessment.is_none(),
+            Job::Assess(i) => self.states[self.position(i)].assessment.is_none(),
             // Only started by the user, through the loader's pinned jobs.
             Job::Deband(_) => false,
         });
@@ -285,50 +345,51 @@ impl Viewer {
     fn add_shot(&mut self, shot: Shot) {
         let index = match self.shots.iter().position(|s| s.stem == shot.stem) {
             Some(index) => {
-                self.shots[index] = shot.clone();
-                self.loader.replace(index, shot);
-                self.states[index] = ShotState::default();
-                self.times[index] = Time::Unknown;
+                self.replace_shot(index, shot, true);
                 index
             }
             None => {
                 let index = self.shots.partition_point(|s| s.stem < shot.stem);
-                self.shots.insert(index, shot.clone());
-                self.loader.insert(index, shot);
+                let id = self.registry.write().unwrap().add(shot.clone());
+                self.shots.insert(index, shot);
+                self.ids.insert(index, id);
+                // The shots after it move down one position.
+                for &moved in &self.ids[index + 1..] {
+                    self.positions[moved.0 as usize] += 1;
+                }
+                self.positions.push(index);
+                self.versions.push(0);
                 self.states.insert(index, ShotState::default());
                 self.times.insert(index, Time::Unknown);
                 self.app.count += 1;
+                self.scheduled = None;
+                self.cache_saved = false;
                 index
             }
         };
-        // Everything indexed is stale, and is loaded again.
-        self.previews.clear();
-        self.fulls.clear();
-        self.recent.clear();
-        self.timings.clear();
-        self.scheduled = None;
         self.requested = None;
         self.shown = None;
-        self.cache_saved = false;
         self.app.apply(Command::GoTo(index), None, self.view);
     }
 
     /// Takes in what the background threads have loaded or encoded.
     pub fn receive(&mut self) {
-        while let Ok((epoch, loaded)) = self.loaded.try_recv() {
-            // A job started before a shot was added speaks of the old
-            // indices: it is asked for again. A correction is told by its
-            // file, which does not move.
-            if epoch != self.loader.epoch() && !matches!(loaded, Loaded::Debanded { .. }) {
-                continue;
-            }
+        while let Ok(loaded) = self.loaded.try_recv() {
+            // A job run on files written again since is stale: the shot
+            // is asked for again.
+            let stale = |id: ShotId, version: Version| self.versions[id.0 as usize] != version;
             match loaded {
                 Loaded::Head {
-                    index,
+                    id,
+                    version,
                     exif,
                     thumbnail,
                     marks,
                 } => {
+                    if stale(id, version) {
+                        continue;
+                    }
+                    let index = self.position(id);
                     let taken = exif.as_ref().ok().and_then(|exif| exif.taken_ms);
                     self.times[index] = taken.map_or(Time::Missing, Time::At);
                     let state = &mut self.states[index];
@@ -337,11 +398,22 @@ impl Viewer {
                     state.marks.get_or_insert(marks);
                     state.thumbnail = thumbnail;
                 }
-                Loaded::Assessment { index, assessment } => {
+                Loaded::Assessment {
+                    id,
+                    version,
+                    assessment,
+                } => {
+                    if stale(id, version) {
+                        continue;
+                    }
+                    let index = self.position(id);
                     self.states[index].assessment = Some(assessment);
                 }
-                Loaded::Debanded { raw, result } => {
-                    let stem = raw.file_stem().unwrap_or_default().to_string_lossy();
+                Loaded::Debanded { id, result } => {
+                    let stem = self.shots[self.position(id)]
+                        .stem
+                        .to_string_lossy()
+                        .into_owned();
                     match result {
                         Ok((dng, pattern)) => {
                             self.message = Some(Ok(format!(
@@ -361,15 +433,20 @@ impl Viewer {
                 }
                 Loaded::Picture {
                     job,
+                    version,
                     picture,
                     elapsed,
                 } => {
+                    if stale(job.id(), version) {
+                        continue;
+                    }
                     self.timings.insert(job, elapsed);
+                    let current = self.id(self.app.index);
                     match job {
-                        Job::Preview(i) if i.abs_diff(self.app.index) <= KEEP => {
+                        Job::Preview(i) if self.position(i).abs_diff(self.app.index) <= KEEP => {
                             self.previews.insert(i, picture);
                         }
-                        Job::Full(i) if i == self.app.index || self.keeps_full(i) => {
+                        Job::Full(i) if i == current || self.keeps_full(i) => {
                             self.fulls.insert(i, picture);
                         }
                         _ => {}
@@ -472,6 +549,36 @@ mod tests {
         press(&mut viewer, 'm');
         assert!(matches!(&viewer.message, Some(Err(m)) if m.contains("no kept shot")));
         assert_eq!(viewer.states[0].marks().unwrap().rank, 3);
+    }
+
+    #[test]
+    fn an_added_shot_takes_its_place_and_keeps_the_others_ids() {
+        let shoot = shoot();
+        let dir = shoot.path();
+        let mut viewer = viewer(dir);
+        let ids_before = viewer.ids.clone();
+        assert_eq!(ids_before, vec![ShotId(0), ShotId(1), ShotId(2)]);
+
+        // A DNG written for A sorts right after it.
+        fs::write(dir.join("A-deband.dng"), b"dng").unwrap();
+        let shot = pairing::pair([dir.join("A-deband.dng")]).pop().unwrap();
+        viewer.add_shot(shot.clone());
+        assert_eq!(viewer.app.index, 1);
+        assert_eq!(viewer.app.count, 4);
+        assert_eq!(viewer.ids, vec![ShotId(0), ShotId(3), ShotId(1), ShotId(2)]);
+        assert_eq!(viewer.position(ShotId(1)), 2);
+        assert_eq!(viewer.position(ShotId(3)), 1);
+        assert_eq!(viewer.shots[1].stem, "A-deband");
+        assert_eq!(viewer.registry.read().unwrap().get(ShotId(3)).0, shot);
+        assert_eq!(viewer.versions, vec![0, 0, 0, 0]);
+
+        // Written again: same id, new version, loaded afresh.
+        viewer.states[1].marks = Some(Ok(Marks::default()));
+        viewer.add_shot(shot);
+        assert_eq!(viewer.app.count, 4);
+        assert_eq!(viewer.versions, vec![0, 0, 0, 1]);
+        assert!(viewer.states[1].marks.is_none());
+        assert_eq!(viewer.registry.read().unwrap().get(ShotId(3)).1, 1);
     }
 
     #[test]

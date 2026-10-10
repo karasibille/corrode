@@ -6,6 +6,7 @@
 mod app;
 mod culling;
 mod encoder;
+mod jobs;
 mod loader;
 mod text;
 mod viewer;
