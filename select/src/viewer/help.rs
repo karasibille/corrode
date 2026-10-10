@@ -83,6 +83,11 @@ impl Viewer {
             "m",
             "move the kept shots, whole (JPEG, RAW, sidecars), to the selection/ folder next to them, to open it in RawTherapee; asks first, m again confirms. The shots stay in the list, marked → selection.",
         );
+        key(
+            &mut lines,
+            "G",
+            "sort the shots of selection/, whenever they were sent, into folders of shots that look alike (colour of the light, layout, time taken), named after the colour and the first shot, bleu-_1117041; shots alone stay; asks first, G again confirms.",
+        );
 
         section(&mut lines, "Filters");
         key(

@@ -126,6 +126,9 @@ pub struct Viewer {
     /// Whether the next `m` sends the kept shots: the first asks, the
     /// second does it, any other key gives up.
     confirm_send: bool,
+    /// The sorting of the selection folder proposed by `G`, until the
+    /// second `G` does it or another key gives up.
+    pending_groups: Option<actions::PendingGroups>,
     /// Whether the full help is shown instead of the shots.
     help: bool,
     /// How many lines the help is scrolled down.
@@ -190,6 +193,7 @@ impl Viewer {
             config,
             message: None,
             confirm_send: false,
+            pending_groups: None,
             help: false,
             help_scroll: 0,
         }
@@ -478,6 +482,7 @@ mod tests {
     use std::path::Path;
 
     use corrode_core::marks::ColorLabel;
+    use corrode_core::selection::Batch;
     use corrode_core::{pairing, rawtherapee, selection};
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
@@ -511,6 +516,13 @@ mod tests {
             state.marks = Some(rawtherapee::read_marks(shot).map_err(|err| err.to_string()));
         }
         viewer
+    }
+
+    fn batch(label: &str, members: &[usize]) -> Batch {
+        Batch {
+            label: label.into(),
+            members: members.to_vec(),
+        }
     }
 
     fn press(viewer: &mut Viewer, c: char) {
@@ -548,6 +560,54 @@ mod tests {
         // Nothing left to send; the sent shots keep their marks.
         press(&mut viewer, 'm');
         assert!(matches!(&viewer.message, Some(Err(m)) if m.contains("no kept shot")));
+        assert_eq!(viewer.states[0].marks().unwrap().rank, 3);
+    }
+
+    #[test]
+    fn grouping_asks_then_sorts_the_selection_folder_and_follows_the_shots() {
+        let shoot = shoot();
+        let dir = shoot.path();
+        let mut viewer = viewer(dir);
+        press(&mut viewer, 'm');
+        press(&mut viewer, 'm');
+        let selection_dir = selection::folder(dir);
+
+        // The images are not real: no thumbnail, so nothing to group.
+        press(&mut viewer, 'G');
+        assert!(viewer.pending_groups.is_none());
+        assert!(matches!(&viewer.message, Some(Err(m)) if m.contains("no group")));
+
+        // With a grouping proposed, the second G does it.
+        let shots = pairing::scan_dir(&selection_dir).unwrap();
+        assert_eq!(shots.len(), 2);
+        viewer.pending_groups = Some(actions::PendingGroups {
+            shots,
+            batches: vec![batch("bleu", &[0, 1])],
+        });
+        press(&mut viewer, 'x');
+        assert!(viewer.pending_groups.is_none());
+        assert!(matches!(&viewer.message, Some(Err(m)) if m.contains("nothing sorted")));
+        assert!(selection_dir.join("A.RW2").exists());
+
+        viewer.pending_groups = Some(actions::PendingGroups {
+            shots: pairing::scan_dir(&selection_dir).unwrap(),
+            batches: vec![batch("bleu", &[0, 1])],
+        });
+        press(&mut viewer, 'G');
+        assert!(
+            matches!(&viewer.message, Some(Ok(m)) if m.starts_with("2 shots sorted")),
+            "{:?}",
+            viewer.message
+        );
+        for name in ["A.RW2", "A.RW2.pp3", "B.JPG", "B.JPG.pp3"] {
+            assert!(selection_dir.join("bleu-A").join(name).exists(), "{name}");
+            assert!(!selection_dir.join(name).exists(), "{name}");
+        }
+        // The list follows: the shots are at their new place, marks kept.
+        assert_eq!(
+            viewer.shots[0].raw,
+            Some(selection_dir.join("bleu-A/A.RW2"))
+        );
         assert_eq!(viewer.states[0].marks().unwrap().rank, 3);
     }
 

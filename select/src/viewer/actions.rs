@@ -1,6 +1,9 @@
 //! What the keys do: browsing, marks, bursts, filters, RawTherapee.
 
 use corrode_core::marks::{ColorLabel, Marks};
+use corrode_core::pairing::{self, Shot};
+use corrode_core::selection::Batch;
+use corrode_core::similarity::{self, Settings};
 use corrode_core::{rawtherapee, selection};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -9,6 +12,12 @@ use crate::app::{Command, Filter, MarkChange, Mode, burst_around, next_matching}
 use crate::culling;
 use crate::text::rank_key;
 use corrode_core::bursts;
+
+/// The selection folder's shots and how `G` proposes to sort them.
+pub(super) struct PendingGroups {
+    pub shots: Vec<Shot>,
+    pub batches: Vec<Batch>,
+}
 
 impl Viewer {
     pub fn key(&mut self, key: KeyEvent) {
@@ -23,6 +32,14 @@ impl Viewer {
                 self.send_kept();
             } else {
                 self.message = Some(Err("nothing sent".to_owned()));
+            }
+            return;
+        }
+        if let Some(pending) = self.pending_groups.take() {
+            if key.code == KeyCode::Char('G') {
+                self.sort_groups(&pending);
+            } else {
+                self.message = Some(Err("nothing sorted".to_owned()));
             }
             return;
         }
@@ -44,6 +61,7 @@ impl Viewer {
             KeyCode::Char('k') => return self.keep_in_burst(),
             KeyCode::Char('X') => return self.reject_burst(),
             KeyCode::Char('m') => return self.ask_to_send(),
+            KeyCode::Char('G') => return self.ask_to_group(),
             KeyCode::Char('d') => return self.deband(false),
             KeyCode::Char('D') => return self.deband(true),
             KeyCode::Char('?') => {
@@ -227,6 +245,68 @@ impl Viewer {
         self.message = Some(match failed {
             None => Ok(format!("{sent} shots moved to {}/", folder.display())),
             Some(err) => Err(format!("{sent} shots moved, then {err}")),
+        });
+    }
+
+    /// Proposes to sort the shots of the selection folder into subfolders
+    /// of shots that look alike, whenever they were sent.
+    fn ask_to_group(&mut self) {
+        let folder = selection::folder(&self.dir);
+        let shots = match pairing::scan_dir(&folder) {
+            Ok(shots) => shots,
+            Err(err) => {
+                self.message = Some(Err(format!("{}: {err}", folder.display())));
+                return;
+            }
+        };
+        let batches: Vec<Batch> = similarity::group_shots(&shots, &Settings::default())
+            .into_iter()
+            .filter(|group| group.members.len() >= 2)
+            .map(|group| Batch {
+                label: group.colour.to_owned(),
+                members: group.members,
+            })
+            .collect();
+        if batches.is_empty() {
+            self.message = Some(Err(format!(
+                "no group of two shots or more among the {} of {}/, send the kept shots first with m",
+                shots.len(),
+                selection::FOLDER
+            )));
+            return;
+        }
+        let grouped: usize = batches.iter().map(|batch| batch.members.len()).sum();
+        self.message = Some(Ok(format!(
+            "move {grouped} of the {} shots of {}/ into {} folders of shots that look alike? G again to confirm, any other key to keep them there",
+            shots.len(),
+            selection::FOLDER,
+            batches.len()
+        )));
+        self.pending_groups = Some(PendingGroups { shots, batches });
+    }
+
+    /// Does the sorting proposed, and gives the moved shots their new
+    /// place in the list.
+    fn sort_groups(&mut self, pending: &PendingGroups) {
+        let folder = selection::folder(&self.dir);
+        let sorting = selection::sort_into_groups(&folder, &pending.shots, &pending.batches);
+        let mut moved = 0;
+        for sorted in &sorting.sorted {
+            for shot in &sorted.shots {
+                moved += 1;
+                // Shots sent in an earlier session are not in the list.
+                if let Some(position) = self.shots.iter().position(|s| s.stem == shot.stem) {
+                    self.replace_shot(position, shot.clone(), false);
+                }
+            }
+        }
+        self.message = Some(match sorting.error {
+            None => Ok(format!(
+                "{moved} shots sorted into {} folders of {}/",
+                sorting.sorted.len(),
+                selection::FOLDER
+            )),
+            Some(err) => Err(format!("{moved} shots sorted, then {err}")),
         });
     }
 
