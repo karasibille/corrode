@@ -19,7 +19,7 @@ use corrode_core::{banding, rawtherapee, sharpness};
 use image::DynamicImage;
 
 use crate::culling::Assessment;
-use crate::loader::Loader;
+use corrode_ui::loader::Loader;
 
 /// Names a shot for good, whatever its place on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

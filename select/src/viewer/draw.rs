@@ -12,8 +12,9 @@ use ratatui_image::{Image, Resize};
 
 use super::{THUMB_ROWS, Viewer};
 use crate::app::{Mode, scaled_view, zoom_crop};
-use crate::encoder::Request;
-use crate::text::{centered, keys_line, short_marks};
+use crate::text::short_marks;
+use corrode_ui::encoder::Request;
+use corrode_ui::text::{centered, keys_line};
 
 impl Viewer {
     pub fn draw(&mut self, frame: &mut Frame) {

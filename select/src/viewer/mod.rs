@@ -29,9 +29,9 @@ use ratatui_image::protocol::Protocol;
 
 use crate::app::{App, Command, Filter, Mode, Time, burst_around};
 use crate::culling::{self, Assessment, Progress};
-use crate::encoder::{Encoded, Encoder, Request};
 use crate::jobs::{self, Job, Loaded, Registry, SharedRegistry, ShotId, Version};
-use crate::loader::Loader;
+use corrode_ui::encoder::{Encoded, Encoder, Request};
+use corrode_ui::loader::Loader;
 
 /// Shots decoded ahead on each side of the current one.
 const PRELOAD: usize = 2;

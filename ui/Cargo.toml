@@ -1,20 +1,13 @@
 [package]
-name = "corrode-tui"
-description = "Terminal interface of corrode"
+name = "corrode-ui"
+description = "What the terminal interfaces of corrode share: background jobs, terminal graphics, lines that fit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[[bin]]
-name = "corrode"
-path = "src/main.rs"
 
 [dependencies]
 corrode-core.workspace = true
 image = { version = "0.25", default-features = false }
 ratatui = "0.30"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
-
-[dev-dependencies]
-tempfile = "3.27.0"

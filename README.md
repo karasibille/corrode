@@ -16,13 +16,14 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 
 | Crate | Role |
 |---|---|
-| `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` marks, picture decoding, EXIF; later effects |
-| `tui/` (`corrode-tui`) | Terminal interface (`ratatui` + `ratatui-image`), builds the `corrode` binary |
+| `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` marks, picture decoding, EXIF, light bands, effects |
+| `ui/` (`corrode-ui`) | What the terminal interfaces share: background jobs, terminal graphics, lines that fit |
+| `select/` (`corrode-select`) | Culling in the terminal (`ratatui` + `ratatui-image`), the `corrode-select` binary |
 
 ## Culling
 
 ```sh
-cargo run --release -p corrode-tui -- path/to/shoot
+cargo run --release -p corrode-select -- path/to/shoot
 ```
 
 corrode shows the shots of a directory one at a time, with the shot's marks and settings on top and a strip of the burst it belongs to below: shots taken less than 300 ms apart. Under each thumbnail are its marks, and ◆ points out the sharpest frame of the burst, measured around the camera's focus point. Marks are written to the RawTherapee sidecars as soon as they are set.

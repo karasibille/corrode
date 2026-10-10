@@ -8,7 +8,8 @@ use ratatui::text::{Line, Span};
 
 use super::Viewer;
 use crate::app::{Filter, Mode, Time};
-use crate::text::{fit, label_color};
+use crate::text::label_color;
+use corrode_ui::text::fit;
 
 impl Viewer {
     /// What changes from one photo to the next and matters for culling:
