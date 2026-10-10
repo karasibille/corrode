@@ -1,2 +1,5 @@
 /target
 /sandbox
+
+# CodeGraph index, local
+.codegraph/
