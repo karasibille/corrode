@@ -1,40 +1,44 @@
 //! The picture seen through moving water: a field of smooth noise pushes
 //! every pixel a little way, more here, less there.
 //!
-//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`] wide, as in the
+//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide, as in the
 //! glitch effects.
+
+use std::fmt;
 
 use image::{Rgb, RgbImage};
 
+use super::Error;
 use super::film::bilinear;
-use super::glitch::REFERENCE_WIDTH;
 use super::parallel;
 use super::random::Random;
+use super::recipe::{Params, Spec};
+use super::units::Size;
 
 /// Parameters of the liquid distortion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Liquid {
     /// How far a pixel can be pushed, in pixels for a picture
-    /// [`REFERENCE_WIDTH`] wide.
-    pub amplitude: u32,
+    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    pub amplitude: Size,
     /// Size of the waves, in the same pixels: the distance over which
     /// the push changes.
-    pub scale: u32,
+    pub scale: Size,
     /// Layers of finer waves added to the first, each half the size
     /// and half the strength: 1 is smooth, 3 is choppy.
     pub octaves: u32,
     /// How far the waves have drifted, in the same pixels: moving it
     /// over an animation makes the water flow.
-    pub drift: u32,
+    pub drift: Size,
 }
 
 impl Default for Liquid {
     fn default() -> Liquid {
         Liquid {
-            amplitude: 40,
-            scale: 150,
+            amplitude: Size::new(40),
+            scale: Size::new(150),
             octaves: 2,
-            drift: 0,
+            drift: Size::new(0),
         }
     }
 }
@@ -43,13 +47,12 @@ impl Default for Liquid {
 /// the picture ripples. The seed shapes the waves.
 pub fn liquid(image: &RgbImage, params: Liquid, seed: u64) -> RgbImage {
     let (width, height) = (image.width(), image.height());
-    if width == 0 || height == 0 || params.scale == 0 {
+    if width == 0 || height == 0 || params.scale.value() == 0 {
         return image.clone();
     }
-    let scale = width as f32 / REFERENCE_WIDTH as f32;
-    let amplitude = params.amplitude as f32 * scale;
-    let wave = params.scale as f32 * scale;
-    let drift = params.drift as f32 * scale;
+    let amplitude = params.amplitude.on_f32(width);
+    let wave = params.scale.on_f32(width);
+    let drift = params.drift.on_f32(width);
     let octaves = params.octaves.clamp(1, 6);
     // One field for each direction, lattices large enough for the drift.
     let cells = ((width as f32 + drift) / wave).ceil() as usize + 2;
@@ -111,6 +114,32 @@ impl Noise {
     }
 }
 
+impl Spec for Liquid {
+    const NAME: &'static str = "liquid";
+
+    fn parse(params: &mut Params) -> Result<Liquid, Error> {
+        let d = Liquid::default();
+        Ok(Liquid {
+            amplitude: params.get("amplitude", d.amplitude)?,
+            scale: params.get("scale", d.scale)?,
+            octaves: params.get("octaves", d.octaves)?,
+            drift: params.get("drift", d.drift)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " amplitude={} scale={} octaves={} drift={}",
+            self.amplitude, self.scale, self.octaves, self.drift
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        Ok(liquid(image, *self, seed))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,10 +173,10 @@ mod tests {
     fn the_picture_ripples_the_same_way_for_a_seed() {
         let image = stripes();
         let params = Liquid {
-            amplitude: 30,
-            scale: 100,
+            amplitude: Size::new(30),
+            scale: Size::new(100),
             octaves: 2,
-            drift: 0,
+            drift: Size::new(0),
         };
         let rippled = liquid(&image, params, 3);
         assert_eq!((rippled.width(), rippled.height()), (1000, 200));
@@ -163,7 +192,7 @@ mod tests {
             liquid(
                 &image,
                 Liquid {
-                    drift: 50,
+                    drift: Size::new(50),
                     ..params
                 },
                 3
@@ -173,7 +202,7 @@ mod tests {
         let still = liquid(
             &image,
             Liquid {
-                amplitude: 0,
+                amplitude: Size::new(0),
                 ..params
             },
             3,

@@ -1,15 +1,19 @@
 //! The look of print and screens: pictures reduced to dots of ink, to
 //! two inks, or seen through the lines of a tube.
 //!
-//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`] wide, as in the
+//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide, as in the
 //! glitch effects.
+
+use std::fmt;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
-use super::glitch::{REFERENCE_WIDTH, scaled};
+use super::Error;
 use super::parallel;
+use super::recipe::{Params, Spec};
 use super::sort::brightness;
+use super::units::{Percent, Size};
 
 /// A colour written `rrggbb`, as on the web.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,10 +76,10 @@ impl std::fmt::Display for DitherMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dither {
     pub method: DitherMethod,
-    /// Size of a dot, in pixels for a picture [`REFERENCE_WIDTH`] wide:
+    /// Size of a dot, in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide:
     /// the picture is reduced by it before the dots are placed, and
     /// each dot is drawn that big.
-    pub size: u32,
+    pub size: Size,
     /// Brightness, 0 to 255, that comes out mid-grey: lower brightens
     /// the result, higher darkens it.
     pub mid: u8,
@@ -85,7 +89,7 @@ impl Default for Dither {
     fn default() -> Dither {
         Dither {
             method: DitherMethod::Diffusion,
-            size: 2,
+            size: Size::new(2),
             mid: 128,
         }
     }
@@ -97,7 +101,7 @@ pub fn dither(image: &RgbImage, params: Dither) -> RgbImage {
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let dot = scaled(params.size, width as f32 / REFERENCE_WIDTH as f32).max(1);
+    let dot = params.size.on(width).max(1);
     let (small_width, small_height) = ((width / dot).max(1), (height / dot).max(1));
     let small = if dot > 1 {
         DynamicImage::ImageRgb8(image.clone())
@@ -209,30 +213,30 @@ pub fn duotone(image: &RgbImage, params: Duotone) -> RgbImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scanlines {
     /// Rows from one line to the next, in pixels for a picture
-    /// [`REFERENCE_WIDTH`] wide.
-    pub period: u32,
+    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    pub period: Size,
     /// Rows a line is thick, in the same pixels.
-    pub thickness: u32,
+    pub thickness: Size,
     /// How dark the lines are, 0 to 100: 100 is black.
-    pub strength: u8,
+    pub strength: Percent,
 }
 
 impl Default for Scanlines {
     fn default() -> Scanlines {
         Scanlines {
-            period: 4,
-            thickness: 1,
-            strength: 60,
+            period: Size::new(4),
+            thickness: Size::new(1),
+            strength: Percent::new(60),
         }
     }
 }
 
 /// Darkens rows at a regular period, as the lines of a tube screen.
 pub fn scanlines(image: &RgbImage, params: Scanlines) -> RgbImage {
-    let scale = image.width() as f32 / REFERENCE_WIDTH as f32;
-    let period = scaled(params.period, scale).max(1);
-    let thickness = scaled(params.thickness, scale).clamp(1, period);
-    let keep = 1.0 - f32::from(params.strength.min(100)) / 100.0;
+    let width = image.width();
+    let period = params.period.on(width).max(1);
+    let thickness = params.thickness.on(width).clamp(1, period);
+    let keep = 1.0 - params.strength.fraction();
     let mut lined = image.clone();
     parallel::for_each_pixel(&mut lined, |_, y, pixel| {
         if y % period < thickness {
@@ -240,6 +244,76 @@ pub fn scanlines(image: &RgbImage, params: Scanlines) -> RgbImage {
         }
     });
     lined
+}
+
+impl Spec for Dither {
+    const NAME: &'static str = "dither";
+
+    fn parse(params: &mut Params) -> Result<Dither, Error> {
+        let d = Dither::default();
+        Ok(Dither {
+            method: params.get("method", d.method)?,
+            size: params.get("size", d.size)?,
+            mid: params.get("mid", d.mid)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " method={} size={} mid={}",
+            self.method, self.size, self.mid
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(dither(image, *self))
+    }
+}
+
+impl Spec for Duotone {
+    const NAME: &'static str = "duotone";
+
+    fn parse(params: &mut Params) -> Result<Duotone, Error> {
+        let d = Duotone::default();
+        Ok(Duotone {
+            dark: params.get("dark", d.dark)?,
+            light: params.get("light", d.light)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " dark={} light={}", self.dark, self.light)
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(duotone(image, *self))
+    }
+}
+
+impl Spec for Scanlines {
+    const NAME: &'static str = "scanlines";
+
+    fn parse(params: &mut Params) -> Result<Scanlines, Error> {
+        let d = Scanlines::default();
+        Ok(Scanlines {
+            period: params.get("period", d.period)?,
+            thickness: params.get("thickness", d.thickness)?,
+            strength: params.get("strength", d.strength)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " period={} thickness={} strength={}",
+            self.period, self.thickness, self.strength
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(scanlines(image, *self))
+    }
 }
 
 #[cfg(test)]
@@ -262,7 +336,7 @@ mod tests {
                 &grey(64, 1000, 64),
                 Dither {
                     method,
-                    size: 1,
+                    size: Size::new(1),
                     mid: 128,
                 },
             );
@@ -275,7 +349,7 @@ mod tests {
             &grey(64, 1000, 64),
             Dither {
                 mid: 64,
-                size: 1,
+                size: Size::new(1),
                 ..Dither::default()
             },
         );
@@ -287,7 +361,7 @@ mod tests {
         let dotted = dither(
             &grey(128, 1000, 40),
             Dither {
-                size: 5,
+                size: Size::new(5),
                 ..Dither::default()
             },
         );
@@ -331,9 +405,9 @@ mod tests {
         let lined = scanlines(
             &grey(200, 1000, 12),
             Scanlines {
-                period: 4,
-                thickness: 1,
-                strength: 50,
+                period: Size::new(4),
+                thickness: Size::new(1),
+                strength: Percent::new(50),
             },
         );
         for y in 0..12 {

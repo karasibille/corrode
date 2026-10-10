@@ -1,6 +1,7 @@
 //! Effects made of JPEG compression: its wear over generations, and the
 //! failures of a damaged file.
 
+use std::fmt;
 use std::io::Cursor;
 
 use image::codecs::jpeg::JpegEncoder;
@@ -9,6 +10,7 @@ use image::{ImageFormat, RgbImage};
 use super::Error;
 use super::parallel;
 use super::random::Random;
+use super::recipe::{Params, Spec, pair};
 
 /// Parameters of the generation loss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +145,53 @@ fn scan_start(jpeg: &[u8]) -> Option<usize> {
         i += 2 + length;
     }
     None
+}
+
+impl Spec for GenerationLoss {
+    const NAME: &'static str = "loss";
+
+    fn parse(params: &mut Params) -> Result<GenerationLoss, Error> {
+        let d = GenerationLoss::default();
+        Ok(GenerationLoss {
+            generations: params.get("generations", d.generations)?,
+            quality: params.get("quality", d.quality)?,
+            shift: params.pair("shift", d.shift)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " generations={} quality={} shift={}",
+            self.generations,
+            self.quality,
+            pair(self.shift)
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(generation_loss(image, *self))
+    }
+}
+
+impl Spec for Databend {
+    const NAME: &'static str = "bend";
+
+    fn parse(params: &mut Params) -> Result<Databend, Error> {
+        let d = Databend::default();
+        Ok(Databend {
+            quality: params.get("quality", d.quality)?,
+            hits: params.get("hits", d.hits)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " quality={} hits={}", self.quality, self.hits)
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        databend(image, *self, seed)
+    }
 }
 
 #[cfg(test)]

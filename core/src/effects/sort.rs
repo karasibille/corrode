@@ -1,9 +1,13 @@
 //! Pixel sorting, as Kim Asendorf's: the picture melts into streaks.
 
+use std::fmt;
+
 use image::{Rgb, RgbImage};
 use rayon::prelude::*;
 
+use super::Error;
 use super::parallel;
+use super::recipe::{Params, Spec};
 
 /// Which way an effect runs over the picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -121,6 +125,32 @@ pub fn pixel_sort(image: &RgbImage, params: PixelSort) -> RgbImage {
 pub(super) fn brightness(pixel: Rgb<u8>) -> u8 {
     let [r, g, b] = pixel.0;
     ((299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) / 1000) as u8
+}
+
+impl Spec for PixelSort {
+    const NAME: &'static str = "sort";
+
+    fn parse(params: &mut Params) -> Result<PixelSort, Error> {
+        let d = PixelSort::default();
+        Ok(PixelSort {
+            direction: params.get("direction", d.direction)?,
+            low: params.get("low", d.low)?,
+            high: params.get("high", d.high)?,
+            reverse: params.get("reverse", d.reverse)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " direction={} low={} high={} reverse={}",
+            self.direction, self.low, self.high, self.reverse
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(pixel_sort(image, *self))
+    }
 }
 
 #[cfg(test)]

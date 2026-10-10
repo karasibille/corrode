@@ -2,18 +2,22 @@
 //! a lens that does not keep the colours together, grain, a faded print,
 //! dark corners, a leak of light, lights that glow.
 //!
-//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`] wide, as in the
+//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide, as in the
 //! glitch effects. The blurs are made on a reduced copy of the picture,
 //! which they hide anyway, and blended back at full size.
+
+use std::fmt;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
-use super::glitch::{REFERENCE_WIDTH, scaled};
+use super::Error;
 use super::parallel;
 use super::print::Color;
 use super::random::Random;
+use super::recipe::{Params, Spec};
 use super::sort::brightness;
+use super::units::{Percent, Size};
 
 /// Width the blurs are made at: enough for a blur, a fraction of the
 /// work.
@@ -108,14 +112,14 @@ impl std::fmt::Display for DragKind {
 pub struct Drag {
     pub kind: DragKind,
     /// How far the smear goes, in pixels for a picture
-    /// [`REFERENCE_WIDTH`] wide: the length of a motion smear, or how far
+    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide: the length of a motion smear, or how far
     /// the edge of the picture moves in a zoom smear.
-    pub length: u32,
+    pub length: Size,
     /// Direction of a motion smear, in degrees, 0 being to the right
     /// and 90 downwards.
     pub angle: f32,
     /// How much of the smear shows, 0 to 100.
-    pub mix: u8,
+    pub mix: Percent,
     pub blend: Blend,
 }
 
@@ -123,9 +127,9 @@ impl Default for Drag {
     fn default() -> Drag {
         Drag {
             kind: DragKind::Motion,
-            length: 60,
+            length: Size::new(60),
             angle: 0.0,
-            mix: 70,
+            mix: Percent::new(70),
             blend: Blend::Lighten,
         }
     }
@@ -139,8 +143,7 @@ pub fn drag(image: &RgbImage, params: Drag) -> RgbImage {
         return image.clone();
     }
     let small = reduced(image);
-    let scale = small.width() as f32 / REFERENCE_WIDTH as f32;
-    let length = params.length as f32 * scale;
+    let length = params.length.on_f32(small.width());
     let samples = (length.ceil() as usize).clamp(1, SMEAR_SAMPLES);
     let (sw, sh) = (small.width() as f32, small.height() as f32);
     let (cx, cy) = (sw / 2.0, sh / 2.0);
@@ -214,9 +217,9 @@ pub fn aberration(image: &RgbImage, params: Aberration) -> RgbImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grain {
     /// How strong the grain is, 0 to 100.
-    pub strength: u8,
-    /// Size of a grain, in pixels for a picture [`REFERENCE_WIDTH`] wide.
-    pub size: u32,
+    pub strength: Percent,
+    /// Size of a grain, in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    pub size: Size,
     /// Whether the grain colours the picture, or only lightens and
     /// darkens it.
     pub color: bool,
@@ -225,8 +228,8 @@ pub struct Grain {
 impl Default for Grain {
     fn default() -> Grain {
         Grain {
-            strength: 30,
-            size: 2,
+            strength: Percent::new(30),
+            size: Size::new(2),
             color: false,
         }
     }
@@ -239,7 +242,7 @@ pub fn grain(image: &RgbImage, params: Grain, seed: u64) -> RgbImage {
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let dot = scaled(params.size, width as f32 / REFERENCE_WIDTH as f32).max(1);
+    let dot = params.size.on(width).max(1);
     let (gw, gh) = (width.div_ceil(dot), height.div_ceil(dot));
     let mut random = Random::new(seed);
     // Noise of -1 to 1 per grain, one value or three.
@@ -254,7 +257,7 @@ pub fn grain(image: &RgbImage, params: Grain, seed: u64) -> RgbImage {
             }
         })
         .collect();
-    let strength = f32::from(params.strength.min(100)) / 100.0 * 80.0;
+    let strength = params.strength.fraction() * 80.0;
     let mut grained = image.clone();
     parallel::for_each_pixel(&mut grained, |x, y, pixel| {
         let n = noise[((y / dot) * gw + x / dot) as usize];
@@ -273,32 +276,32 @@ pub fn grain(image: &RgbImage, params: Grain, seed: u64) -> RgbImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fade {
     /// How far the blacks are lifted, 0 to 100: the veil of an old print.
-    pub lift: u8,
+    pub lift: Percent,
     /// Saturation, 100 leaving it, 0 taking all colour out, 200
     /// doubling it.
     pub saturation: u8,
     /// A colour the picture leans towards, by `tint_amount` of 0 to 100.
     pub tint: Color,
-    pub tint_amount: u8,
+    pub tint_amount: Percent,
 }
 
 impl Default for Fade {
     fn default() -> Fade {
         Fade {
-            lift: 12,
+            lift: Percent::new(12),
             saturation: 80,
             tint: Color(Rgb([255, 140, 66])),
-            tint_amount: 10,
+            tint_amount: Percent::new(10),
         }
     }
 }
 
 /// A faded print: blacks lifted, colours washed, a tint over all.
 pub fn fade(image: &RgbImage, params: Fade) -> RgbImage {
-    let lift = f32::from(params.lift.min(100)) / 100.0 * 255.0 * 0.5;
+    let lift = params.lift.fraction() * 255.0 * 0.5;
     let saturation = f32::from(params.saturation.min(200)) / 100.0;
     let tint = params.tint.0.0.map(f32::from);
-    let tint_amount = f32::from(params.tint_amount.min(100)) / 100.0;
+    let tint_amount = params.tint_amount.fraction();
     let mut faded = image.clone();
     parallel::for_each_pixel(&mut faded, |_, _, pixel| {
         let grey = f32::from(brightness(*pixel));
@@ -318,17 +321,17 @@ pub fn fade(image: &RgbImage, params: Fade) -> RgbImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vignette {
     /// How dark the corners get, 0 to 100.
-    pub strength: u8,
+    pub strength: Percent,
     /// Where the darkening starts, 0 to 100 of the way from the centre
     /// to the corners.
-    pub start: u8,
+    pub start: Percent,
 }
 
 impl Default for Vignette {
     fn default() -> Vignette {
         Vignette {
-            strength: 50,
-            start: 40,
+            strength: Percent::new(50),
+            start: Percent::new(40),
         }
     }
 }
@@ -338,8 +341,8 @@ pub fn vignette(image: &RgbImage, params: Vignette) -> RgbImage {
     let (width, height) = (image.width() as f32, image.height() as f32);
     let (cx, cy) = (width / 2.0, height / 2.0);
     let corner = (cx * cx + cy * cy).sqrt();
-    let start = f32::from(params.start.min(100)) / 100.0;
-    let strength = f32::from(params.strength.min(100)) / 100.0;
+    let start = params.start.fraction();
+    let strength = params.strength.fraction();
     let mut shaded = image.clone();
     parallel::for_each_pixel(&mut shaded, |x, y, pixel| {
         let (dx, dy) = (x as f32 - cx, y as f32 - cy);
@@ -356,17 +359,17 @@ pub fn vignette(image: &RgbImage, params: Vignette) -> RgbImage {
 pub struct Leak {
     pub color: Color,
     /// How strong the leak is, 0 to 100.
-    pub strength: u8,
+    pub strength: Percent,
     /// How far it reaches into the picture, 0 to 100 of the width.
-    pub size: u8,
+    pub size: Percent,
 }
 
 impl Default for Leak {
     fn default() -> Leak {
         Leak {
             color: Color(Rgb([255, 150, 60])),
-            strength: 70,
-            size: 50,
+            strength: Percent::new(70),
+            size: Percent::new(50),
         }
     }
 }
@@ -384,8 +387,8 @@ pub fn leak(image: &RgbImage, params: Leak, seed: u64) -> RgbImage {
         2 => (width * along, 0.0),
         _ => (width * along, height),
     };
-    let reach = width * f32::from(params.size.min(100)) / 100.0;
-    let strength = f32::from(params.strength.min(100)) / 100.0;
+    let reach = width * f32::from(params.size.value()) / 100.0;
+    let strength = params.strength.fraction();
     let color = params.color.0.0.map(f32::from);
     let mut lit = image.clone();
     parallel::for_each_pixel(&mut lit, |x, y, pixel| {
@@ -409,18 +412,18 @@ pub struct Bloom {
     /// Brightness, 0 to 255, above which a light glows.
     pub threshold: u8,
     /// How far the glow spreads, in pixels for a picture
-    /// [`REFERENCE_WIDTH`] wide.
-    pub radius: u32,
+    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    pub radius: Size,
     /// How bright the glow is, 0 to 100.
-    pub strength: u8,
+    pub strength: Percent,
 }
 
 impl Default for Bloom {
     fn default() -> Bloom {
         Bloom {
             threshold: 200,
-            radius: 30,
-            strength: 60,
+            radius: Size::new(30),
+            strength: Percent::new(60),
         }
     }
 }
@@ -433,7 +436,6 @@ pub fn bloom(image: &RgbImage, params: Bloom) -> RgbImage {
         return image.clone();
     }
     let small = reduced(image);
-    let scale = small.width() as f32 / REFERENCE_WIDTH as f32;
     let threshold = f32::from(params.threshold);
     // The lights alone, the rest black, then blurred.
     let lights = parallel::from_fn(small.width(), small.height(), |x, y| {
@@ -446,7 +448,7 @@ pub fn bloom(image: &RgbImage, params: Bloom) -> RgbImage {
             Rgb([0, 0, 0])
         }
     });
-    let sigma = (params.radius as f32 * scale / 2.0).max(0.5);
+    let sigma = (params.radius.on_f32(small.width()) / 2.0).max(0.5);
     let glow = image::imageops::fast_blur(&lights, sigma);
     blend_over(
         image,
@@ -479,8 +481,8 @@ fn enlarged(small: &RgbImage, width: u32, height: u32) -> RgbImage {
 }
 
 /// `over` blended on `under`, both the same size, by `mix` of 0 to 100.
-fn blend_over(under: &RgbImage, over: &RgbImage, blend: Blend, mix: u8) -> RgbImage {
-    let mix = f32::from(mix.min(100)) / 100.0;
+fn blend_over(under: &RgbImage, over: &RgbImage, blend: Blend, mix: Percent) -> RgbImage {
+    let mix = mix.fraction();
     let mut result = under.clone();
     parallel::for_each_pixel(&mut result, |x, y, pixel| {
         let top = over.get_pixel(x, y);
@@ -513,6 +515,173 @@ pub(super) fn bilinear(image: &RgbImage, x: f32, y: f32) -> [f32; 3] {
     out
 }
 
+impl Spec for Drag {
+    const NAME: &'static str = "drag";
+
+    fn parse(params: &mut Params) -> Result<Drag, Error> {
+        let d = Drag::default();
+        Ok(Drag {
+            kind: params.get("kind", d.kind)?,
+            length: params.get("length", d.length)?,
+            angle: params.get("angle", d.angle)?,
+            mix: params.get("mix", d.mix)?,
+            blend: params.get("blend", d.blend)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " kind={} length={} angle={} mix={} blend={}",
+            self.kind, self.length, self.angle, self.mix, self.blend
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(drag(image, *self))
+    }
+}
+
+impl Spec for Aberration {
+    const NAME: &'static str = "aberration";
+
+    fn parse(params: &mut Params) -> Result<Aberration, Error> {
+        let d = Aberration::default();
+        Ok(Aberration {
+            amount: params.get("amount", d.amount)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " amount={}", self.amount)
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(aberration(image, *self))
+    }
+}
+
+impl Spec for Grain {
+    const NAME: &'static str = "grain";
+
+    fn parse(params: &mut Params) -> Result<Grain, Error> {
+        let d = Grain::default();
+        Ok(Grain {
+            strength: params.get("strength", d.strength)?,
+            size: params.get("size", d.size)?,
+            color: params.get("color", d.color)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " strength={} size={} color={}",
+            self.strength, self.size, self.color
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        Ok(grain(image, *self, seed))
+    }
+}
+
+impl Spec for Fade {
+    const NAME: &'static str = "fade";
+
+    fn parse(params: &mut Params) -> Result<Fade, Error> {
+        let d = Fade::default();
+        Ok(Fade {
+            lift: params.get("lift", d.lift)?,
+            saturation: params.get("saturation", d.saturation)?,
+            tint: params.get("tint", d.tint)?,
+            tint_amount: params.get("tint_amount", d.tint_amount)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " lift={} saturation={} tint={} tint_amount={}",
+            self.lift, self.saturation, self.tint, self.tint_amount
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(fade(image, *self))
+    }
+}
+
+impl Spec for Vignette {
+    const NAME: &'static str = "vignette";
+
+    fn parse(params: &mut Params) -> Result<Vignette, Error> {
+        let d = Vignette::default();
+        Ok(Vignette {
+            strength: params.get("strength", d.strength)?,
+            start: params.get("start", d.start)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " strength={} start={}", self.strength, self.start)
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(vignette(image, *self))
+    }
+}
+
+impl Spec for Leak {
+    const NAME: &'static str = "leak";
+
+    fn parse(params: &mut Params) -> Result<Leak, Error> {
+        let d = Leak::default();
+        Ok(Leak {
+            color: params.get("color", d.color)?,
+            strength: params.get("strength", d.strength)?,
+            size: params.get("size", d.size)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " color={} strength={} size={}",
+            self.color, self.strength, self.size
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        Ok(leak(image, *self, seed))
+    }
+}
+
+impl Spec for Bloom {
+    const NAME: &'static str = "bloom";
+
+    fn parse(params: &mut Params) -> Result<Bloom, Error> {
+        let d = Bloom::default();
+        Ok(Bloom {
+            threshold: params.get("threshold", d.threshold)?,
+            radius: params.get("radius", d.radius)?,
+            strength: params.get("strength", d.strength)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " threshold={} radius={} strength={}",
+            self.threshold, self.radius, self.strength
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(bloom(image, *self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,9 +712,9 @@ mod tests {
             &image,
             Drag {
                 kind: DragKind::Motion,
-                length: 200, // 40 px at this width
+                length: Size::new(200), // 40 px at this width
                 angle: 0.0,
-                mix: 100,
+                mix: Percent::new(100),
                 blend: Blend::Lighten,
             },
         );
@@ -561,7 +730,7 @@ mod tests {
             &image,
             Drag {
                 kind: DragKind::Zoom,
-                length: 100,
+                length: Size::new(100),
                 ..Drag::default()
             },
         );
@@ -582,8 +751,8 @@ mod tests {
     fn grain_scatters_around_the_tone_and_follows_the_seed() {
         let flat = RgbImage::from_pixel(1000, 50, Rgb([128; 3]));
         let params = Grain {
-            strength: 50,
-            size: 1,
+            strength: Percent::new(50),
+            size: Size::new(1),
             color: false,
         };
         let grained = grain(&flat, params, 3);
@@ -616,10 +785,10 @@ mod tests {
         let faded = fade(
             &image,
             Fade {
-                lift: 20,
+                lift: Percent::new(20),
                 saturation: 50,
                 tint: Color(Rgb([255, 255, 255])),
-                tint_amount: 0,
+                tint_amount: Percent::new(0),
             },
         );
         assert!(faded.get_pixel(0, 0)[0] > 15, "{:?}", faded.get_pixel(0, 0));
@@ -628,9 +797,9 @@ mod tests {
         let plain = fade(
             &image,
             Fade {
-                lift: 0,
+                lift: Percent::new(0),
                 saturation: 100,
-                tint_amount: 0,
+                tint_amount: Percent::new(0),
                 ..Fade::default()
             },
         );
@@ -643,8 +812,8 @@ mod tests {
         let shaded = vignette(
             &flat,
             Vignette {
-                strength: 80,
-                start: 30,
+                strength: Percent::new(80),
+                start: Percent::new(30),
             },
         );
         assert_eq!(shaded.get_pixel(100, 50)[0], 200);
@@ -660,8 +829,8 @@ mod tests {
         let flat = RgbImage::from_pixel(200, 100, Rgb([40; 3]));
         let params = Leak {
             color: Color(Rgb([255, 150, 60])),
-            strength: 100,
-            size: 60,
+            strength: Percent::new(100),
+            size: Percent::new(60),
         };
         let lit = leak(&flat, params, 1);
         assert!(mean(&lit) > 41.0);
@@ -676,8 +845,8 @@ mod tests {
             &image,
             Bloom {
                 threshold: 200,
-                radius: 60,
-                strength: 100,
+                radius: Size::new(60),
+                strength: Percent::new(100),
             },
         );
         assert!(

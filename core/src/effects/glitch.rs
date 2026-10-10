@@ -1,27 +1,20 @@
 //! The failures of a screen or a stream: slices of the picture pushed
 //! aside, lines that stretch, colour channels that come apart.
 //!
-//! Sizes are given in pixels for a picture [`REFERENCE_WIDTH`] pixels
+//! Sizes are given in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) pixels
 //! wide and scale with the picture, so that a recipe looks the same on
 //! a preview and on the full-size picture.
 
+use std::fmt;
+
 use image::{Rgb, RgbImage};
 
+use super::Error;
 use super::parallel;
 use super::random::Random;
+use super::recipe::{Params, Spec, pair};
 use super::sort::Direction;
-
-/// The width the sizes of the parameters are given for.
-pub const REFERENCE_WIDTH: u32 = 1000;
-
-/// How many actual pixels a parameter pixel is, on this picture.
-fn scale_of(image: &RgbImage) -> f32 {
-    image.width() as f32 / REFERENCE_WIDTH as f32
-}
-
-pub(super) fn scaled(size: u32, scale: f32) -> u32 {
-    (size as f32 * scale).round() as u32
-}
+use super::units::{Size, scale_of};
 
 fn scaled_offset(offset: i32, scale: f32) -> i32 {
     (offset as f32 * scale).round() as i32
@@ -33,11 +26,11 @@ pub struct SliceShift {
     /// How many horizontal slices are pushed aside.
     pub slices: u32,
     /// How far a slice can be pushed, either way, in pixels for a
-    /// picture [`REFERENCE_WIDTH`] wide. What goes out on one side comes
+    /// picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide. What goes out on one side comes
     /// back on the other.
-    pub shift: u32,
+    pub shift: Size,
     /// Height of a slice, drawn between these two, in the same pixels.
-    pub height: (u32, u32),
+    pub height: (Size, Size),
     /// Whether the red, green and blue of a slice are pushed by
     /// different amounts, so that they come apart.
     pub split: bool,
@@ -49,8 +42,8 @@ impl Default for SliceShift {
     fn default() -> SliceShift {
         SliceShift {
             slices: 12,
-            shift: 120,
-            height: (8, 120),
+            shift: Size::new(120),
+            height: (Size::new(8), Size::new(120)),
             split: false,
             invert: false,
         }
@@ -64,12 +57,8 @@ pub fn slice_shift(image: &RgbImage, params: SliceShift, seed: u64) -> RgbImage 
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let scale = scale_of(image);
-    let max_shift = scaled(params.shift, scale);
-    let heights = (
-        scaled(params.height.0, scale),
-        scaled(params.height.1, scale),
-    );
+    let max_shift = params.shift.on(width);
+    let heights = (params.height.0.on(width), params.height.1.on(width));
     let mut random = Random::new(seed);
     let mut shifted = image.clone();
     for _ in 0..params.slices {
@@ -102,8 +91,8 @@ pub struct PixelStretch {
     /// How many lines are stretched.
     pub bands: u32,
     /// How far a line is stretched, drawn between these two, in pixels
-    /// for a picture [`REFERENCE_WIDTH`] wide.
-    pub length: (u32, u32),
+    /// for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    pub length: (Size, Size),
     /// Rows stretched downwards, or columns stretched rightwards.
     pub direction: Direction,
 }
@@ -112,7 +101,7 @@ impl Default for PixelStretch {
     fn default() -> PixelStretch {
         PixelStretch {
             bands: 6,
-            length: (20, 200),
+            length: (Size::new(20), Size::new(200)),
             direction: Direction::Horizontal,
         }
     }
@@ -133,11 +122,7 @@ pub fn pixel_stretch(image: &RgbImage, params: PixelStretch, seed: u64) -> RgbIm
         Direction::Horizontal => (i, line),
         Direction::Vertical => (line, i),
     };
-    let scale = scale_of(image);
-    let lengths = (
-        scaled(params.length.0, scale),
-        scaled(params.length.1, scale),
-    );
+    let lengths = (params.length.0.on(width), params.length.1.on(width));
     let mut random = Random::new(seed);
     let mut stretched = image.clone();
     for _ in 0..params.bands {
@@ -156,7 +141,7 @@ pub fn pixel_stretch(image: &RgbImage, params: PixelStretch, seed: u64) -> RgbIm
 }
 
 /// Parameters of the channel split: how far each channel is moved, as
-/// `(dx, dy)`, in pixels for a picture [`REFERENCE_WIDTH`] wide.
+/// `(dx, dy)`, in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelSplit {
     pub red: (i32, i32),
@@ -182,7 +167,7 @@ pub fn channel_split(image: &RgbImage, params: ChannelSplit) -> RgbImage {
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let scale = scale_of(image);
+    let scale = scale_of(width);
     let offsets = [params.red, params.green, params.blue]
         .map(|(dx, dy)| (scaled_offset(dx, scale), scaled_offset(dy, scale)));
     let source = |coordinate: u32, delta: i32, size: u32| {
@@ -195,6 +180,91 @@ pub fn channel_split(image: &RgbImage, params: ChannelSplit) -> RgbImage {
         }
         pixel
     })
+}
+
+impl Spec for SliceShift {
+    const NAME: &'static str = "slice";
+
+    fn parse(params: &mut Params) -> Result<SliceShift, Error> {
+        let d = SliceShift::default();
+        Ok(SliceShift {
+            slices: params.get("slices", d.slices)?,
+            shift: params.get("shift", d.shift)?,
+            height: params.pair("height", d.height)?,
+            split: params.get("split", d.split)?,
+            invert: params.get("invert", d.invert)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " slices={} shift={} height={} split={} invert={}",
+            self.slices,
+            self.shift,
+            pair(self.height),
+            self.split,
+            self.invert
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        Ok(slice_shift(image, *self, seed))
+    }
+}
+
+impl Spec for PixelStretch {
+    const NAME: &'static str = "stretch";
+
+    fn parse(params: &mut Params) -> Result<PixelStretch, Error> {
+        let d = PixelStretch::default();
+        Ok(PixelStretch {
+            bands: params.get("bands", d.bands)?,
+            length: params.pair("length", d.length)?,
+            direction: params.get("direction", d.direction)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " bands={} length={} direction={}",
+            self.bands,
+            pair(self.length),
+            self.direction
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        Ok(pixel_stretch(image, *self, seed))
+    }
+}
+
+impl Spec for ChannelSplit {
+    const NAME: &'static str = "split";
+
+    fn parse(params: &mut Params) -> Result<ChannelSplit, Error> {
+        let d = ChannelSplit::default();
+        Ok(ChannelSplit {
+            red: params.pair("red", d.red)?,
+            green: params.pair("green", d.green)?,
+            blue: params.pair("blue", d.blue)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " red={} green={} blue={}",
+            pair(self.red),
+            pair(self.green),
+            pair(self.blue)
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, _seed: u64) -> Result<RgbImage, Error> {
+        Ok(channel_split(image, *self))
+    }
 }
 
 #[cfg(test)]
@@ -212,8 +282,8 @@ mod tests {
         let image = ramp();
         let params = SliceShift {
             slices: 3,
-            shift: 30,
-            height: (4, 10),
+            shift: Size::new(30),
+            height: (Size::new(4), Size::new(10)),
             split: false,
             invert: false,
         };
@@ -246,7 +316,7 @@ mod tests {
         let image = ramp();
         let params = PixelStretch {
             bands: 1,
-            length: (10, 10),
+            length: (Size::new(10), Size::new(10)),
             direction: Direction::Horizontal,
         };
         let stretched = pixel_stretch(&image, params, 5);

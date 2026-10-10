@@ -12,6 +12,7 @@ mod print;
 mod random;
 mod recipe;
 mod sort;
+mod units;
 mod warp;
 
 pub use film::{
@@ -19,13 +20,13 @@ pub use film::{
     fade, grain, leak, vignette,
 };
 pub use glitch::{
-    ChannelSplit, PixelStretch, REFERENCE_WIDTH, SliceShift, channel_split, pixel_stretch,
-    slice_shift,
+    ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
 };
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Color, Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, Recipe};
 pub use sort::{Direction, PixelSort, pixel_sort};
+pub use units::{Percent, REFERENCE_WIDTH, Size, scale_of};
 pub use warp::{Liquid, liquid};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

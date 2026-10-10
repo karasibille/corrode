@@ -13,6 +13,10 @@
 //! them all. For an animation, a number may be a range, `shift=20..160`:
 //! the recipe is then read at a moment between 0 and 1, where the value
 //! stands between the two ends.
+//!
+//! Each effect describes itself through [`Spec`]: its name, how its
+//! parameters are read and written, and how it applies. The list of
+//! effects is the one place that names them all.
 
 use std::fmt;
 use std::str::FromStr;
@@ -20,21 +24,83 @@ use std::str::FromStr;
 use image::RgbImage;
 
 use super::Error;
-use super::film::{
-    Aberration, Bloom, Drag, Fade, Grain, Leak, Vignette, aberration, bloom, drag, fade, grain,
-    leak, vignette,
-};
-use super::glitch::{
-    ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
-};
-use super::jpeg::{Databend, GenerationLoss, databend, generation_loss};
-use super::print::{Dither, Duotone, Scanlines, dither, duotone, scanlines};
-use super::sort::{PixelSort, pixel_sort};
-use super::warp::{Liquid, liquid};
+use super::film::{Aberration, Bloom, Drag, Fade, Grain, Leak, Vignette};
+use super::glitch::{ChannelSplit, PixelStretch, SliceShift};
+use super::jpeg::{Databend, GenerationLoss};
+use super::print::{Dither, Duotone, Scanlines};
+use super::sort::PixelSort;
+use super::warp::Liquid;
 
-/// One effect with its parameters.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Effect {
+/// What an effect tells about itself, so that a recipe can name it,
+/// read and write its parameters, and apply it.
+pub(super) trait Spec: Copy {
+    /// The name written in a recipe.
+    const NAME: &'static str;
+    /// The parameters from their `name=value` text, the rest at their
+    /// defaults.
+    fn parse(params: &mut Params) -> Result<Self, Error>;
+    /// The parameters as `name=value` text, each with a leading space.
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+    /// Applies the effect; `seed` feeds whatever it draws at random.
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error>;
+}
+
+/// Declares the effects of a recipe: the enum of them, their names and
+/// the dispatch of everything a recipe does with one.
+macro_rules! effects {
+    ($($variant:ident($spec:ty)),* $(,)?) => {
+        /// One effect with its parameters.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub enum Effect {
+            $($variant($spec),)*
+        }
+
+        /// The names of the effects, as written in a recipe.
+        pub const NAMES: &[&str] = &[$(<$spec as Spec>::NAME,)*];
+
+        impl Effect {
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $(Effect::$variant(_) => <$spec as Spec>::NAME,)*
+                }
+            }
+
+            /// Applies the effect; `seed` feeds whatever it draws at random.
+            pub fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+                match self {
+                    $(Effect::$variant(params) => params.apply(image, seed),)*
+                }
+            }
+
+            /// An effect from its name and its `name=value` parameters,
+            /// read at moment `t` for the ranges.
+            fn parse(name: &str, pairs: &[(&str, &str)], t: f64) -> Result<Effect, Error> {
+                let mut params = Params::new(name, pairs, t);
+                $(
+                    if name == <$spec as Spec>::NAME {
+                        let effect = Effect::$variant(<$spec as Spec>::parse(&mut params)?);
+                        params.finish()?;
+                        return Ok(effect);
+                    }
+                )*
+                Err(Error::UnknownEffect(name.to_owned()))
+            }
+        }
+
+        impl fmt::Display for Effect {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    $(Effect::$variant(params) => {
+                        f.write_str(<$spec as Spec>::NAME)?;
+                        params.write(f)
+                    })*
+                }
+            }
+        }
+    };
+}
+
+effects! {
     GenerationLoss(GenerationLoss),
     Databend(Databend),
     PixelSort(PixelSort),
@@ -52,311 +118,6 @@ pub enum Effect {
     Leak(Leak),
     Bloom(Bloom),
     Liquid(Liquid),
-}
-
-/// The names of the effects, as written in a recipe.
-pub const NAMES: [&str; 17] = [
-    "loss",
-    "bend",
-    "sort",
-    "slice",
-    "stretch",
-    "split",
-    "dither",
-    "duotone",
-    "scanlines",
-    "drag",
-    "aberration",
-    "grain",
-    "fade",
-    "vignette",
-    "leak",
-    "bloom",
-    "liquid",
-];
-
-impl Effect {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Effect::GenerationLoss(_) => "loss",
-            Effect::Databend(_) => "bend",
-            Effect::PixelSort(_) => "sort",
-            Effect::SliceShift(_) => "slice",
-            Effect::PixelStretch(_) => "stretch",
-            Effect::ChannelSplit(_) => "split",
-            Effect::Dither(_) => "dither",
-            Effect::Duotone(_) => "duotone",
-            Effect::Scanlines(_) => "scanlines",
-            Effect::Drag(_) => "drag",
-            Effect::Aberration(_) => "aberration",
-            Effect::Grain(_) => "grain",
-            Effect::Fade(_) => "fade",
-            Effect::Vignette(_) => "vignette",
-            Effect::Leak(_) => "leak",
-            Effect::Bloom(_) => "bloom",
-            Effect::Liquid(_) => "liquid",
-        }
-    }
-
-    /// Applies the effect; `seed` feeds whatever it draws at random.
-    pub fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
-        Ok(match *self {
-            Effect::GenerationLoss(params) => generation_loss(image, params),
-            Effect::Databend(params) => databend(image, params, seed)?,
-            Effect::PixelSort(params) => pixel_sort(image, params),
-            Effect::SliceShift(params) => slice_shift(image, params, seed),
-            Effect::PixelStretch(params) => pixel_stretch(image, params, seed),
-            Effect::ChannelSplit(params) => channel_split(image, params),
-            Effect::Dither(params) => dither(image, params),
-            Effect::Duotone(params) => duotone(image, params),
-            Effect::Scanlines(params) => scanlines(image, params),
-            Effect::Drag(params) => drag(image, params),
-            Effect::Aberration(params) => aberration(image, params),
-            Effect::Grain(params) => grain(image, params, seed),
-            Effect::Fade(params) => fade(image, params),
-            Effect::Vignette(params) => vignette(image, params),
-            Effect::Leak(params) => leak(image, params, seed),
-            Effect::Bloom(params) => bloom(image, params),
-            Effect::Liquid(params) => liquid(image, params, seed),
-        })
-    }
-
-    /// An effect from its name and its `name=value` parameters, read at
-    /// moment `t` for the ranges.
-    fn parse(name: &str, pairs: &[(&str, &str)], t: f64) -> Result<Effect, Error> {
-        let mut params = Params::new(name, pairs, t);
-        let effect = match name {
-            "loss" => {
-                let d = GenerationLoss::default();
-                Effect::GenerationLoss(GenerationLoss {
-                    generations: params.get("generations", d.generations)?,
-                    quality: params.get("quality", d.quality)?,
-                    shift: params.pair("shift", d.shift)?,
-                })
-            }
-            "bend" => {
-                let d = Databend::default();
-                Effect::Databend(Databend {
-                    quality: params.get("quality", d.quality)?,
-                    hits: params.get("hits", d.hits)?,
-                })
-            }
-            "sort" => {
-                let d = PixelSort::default();
-                Effect::PixelSort(PixelSort {
-                    direction: params.get("direction", d.direction)?,
-                    low: params.get("low", d.low)?,
-                    high: params.get("high", d.high)?,
-                    reverse: params.get("reverse", d.reverse)?,
-                })
-            }
-            "slice" => {
-                let d = SliceShift::default();
-                Effect::SliceShift(SliceShift {
-                    slices: params.get("slices", d.slices)?,
-                    shift: params.get("shift", d.shift)?,
-                    height: params.pair("height", d.height)?,
-                    split: params.get("split", d.split)?,
-                    invert: params.get("invert", d.invert)?,
-                })
-            }
-            "stretch" => {
-                let d = PixelStretch::default();
-                Effect::PixelStretch(PixelStretch {
-                    bands: params.get("bands", d.bands)?,
-                    length: params.pair("length", d.length)?,
-                    direction: params.get("direction", d.direction)?,
-                })
-            }
-            "split" => {
-                let d = ChannelSplit::default();
-                Effect::ChannelSplit(ChannelSplit {
-                    red: params.pair("red", d.red)?,
-                    green: params.pair("green", d.green)?,
-                    blue: params.pair("blue", d.blue)?,
-                })
-            }
-            "dither" => {
-                let d = Dither::default();
-                Effect::Dither(Dither {
-                    method: params.get("method", d.method)?,
-                    size: params.get("size", d.size)?,
-                    mid: params.get("mid", d.mid)?,
-                })
-            }
-            "duotone" => {
-                let d = Duotone::default();
-                Effect::Duotone(Duotone {
-                    dark: params.get("dark", d.dark)?,
-                    light: params.get("light", d.light)?,
-                })
-            }
-            "scanlines" => {
-                let d = Scanlines::default();
-                Effect::Scanlines(Scanlines {
-                    period: params.get("period", d.period)?,
-                    thickness: params.get("thickness", d.thickness)?,
-                    strength: params.get("strength", d.strength)?,
-                })
-            }
-            "drag" => {
-                let d = Drag::default();
-                Effect::Drag(Drag {
-                    kind: params.get("kind", d.kind)?,
-                    length: params.get("length", d.length)?,
-                    angle: params.get("angle", d.angle)?,
-                    mix: params.get("mix", d.mix)?,
-                    blend: params.get("blend", d.blend)?,
-                })
-            }
-            "aberration" => {
-                let d = Aberration::default();
-                Effect::Aberration(Aberration {
-                    amount: params.get("amount", d.amount)?,
-                })
-            }
-            "grain" => {
-                let d = Grain::default();
-                Effect::Grain(Grain {
-                    strength: params.get("strength", d.strength)?,
-                    size: params.get("size", d.size)?,
-                    color: params.get("color", d.color)?,
-                })
-            }
-            "fade" => {
-                let d = Fade::default();
-                Effect::Fade(Fade {
-                    lift: params.get("lift", d.lift)?,
-                    saturation: params.get("saturation", d.saturation)?,
-                    tint: params.get("tint", d.tint)?,
-                    tint_amount: params.get("tint_amount", d.tint_amount)?,
-                })
-            }
-            "vignette" => {
-                let d = Vignette::default();
-                Effect::Vignette(Vignette {
-                    strength: params.get("strength", d.strength)?,
-                    start: params.get("start", d.start)?,
-                })
-            }
-            "leak" => {
-                let d = Leak::default();
-                Effect::Leak(Leak {
-                    color: params.get("color", d.color)?,
-                    strength: params.get("strength", d.strength)?,
-                    size: params.get("size", d.size)?,
-                })
-            }
-            "bloom" => {
-                let d = Bloom::default();
-                Effect::Bloom(Bloom {
-                    threshold: params.get("threshold", d.threshold)?,
-                    radius: params.get("radius", d.radius)?,
-                    strength: params.get("strength", d.strength)?,
-                })
-            }
-            "liquid" => {
-                let d = Liquid::default();
-                Effect::Liquid(Liquid {
-                    amplitude: params.get("amplitude", d.amplitude)?,
-                    scale: params.get("scale", d.scale)?,
-                    octaves: params.get("octaves", d.octaves)?,
-                    drift: params.get("drift", d.drift)?,
-                })
-            }
-            other => return Err(Error::UnknownEffect(other.to_owned())),
-        };
-        params.finish()?;
-        Ok(effect)
-    }
-}
-
-impl fmt::Display for Effect {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pair = |(a, b): (i32, i32)| format!("{a},{b}");
-        let upair = |(a, b): (u32, u32)| format!("{a},{b}");
-        match *self {
-            Effect::GenerationLoss(p) => write!(
-                f,
-                "loss generations={} quality={} shift={}",
-                p.generations,
-                p.quality,
-                pair(p.shift)
-            ),
-            Effect::Databend(p) => write!(f, "bend quality={} hits={}", p.quality, p.hits),
-            Effect::PixelSort(p) => write!(
-                f,
-                "sort direction={} low={} high={} reverse={}",
-                p.direction, p.low, p.high, p.reverse
-            ),
-            Effect::SliceShift(p) => write!(
-                f,
-                "slice slices={} shift={} height={} split={} invert={}",
-                p.slices,
-                p.shift,
-                upair(p.height),
-                p.split,
-                p.invert
-            ),
-            Effect::PixelStretch(p) => write!(
-                f,
-                "stretch bands={} length={} direction={}",
-                p.bands,
-                upair(p.length),
-                p.direction
-            ),
-            Effect::ChannelSplit(p) => write!(
-                f,
-                "split red={} green={} blue={}",
-                pair(p.red),
-                pair(p.green),
-                pair(p.blue)
-            ),
-            Effect::Dither(p) => write!(
-                f,
-                "dither method={} size={} mid={}",
-                p.method, p.size, p.mid
-            ),
-            Effect::Duotone(p) => write!(f, "duotone dark={} light={}", p.dark, p.light),
-            Effect::Scanlines(p) => write!(
-                f,
-                "scanlines period={} thickness={} strength={}",
-                p.period, p.thickness, p.strength
-            ),
-            Effect::Drag(p) => write!(
-                f,
-                "drag kind={} length={} angle={} mix={} blend={}",
-                p.kind, p.length, p.angle, p.mix, p.blend
-            ),
-            Effect::Aberration(p) => write!(f, "aberration amount={}", p.amount),
-            Effect::Grain(p) => write!(
-                f,
-                "grain strength={} size={} color={}",
-                p.strength, p.size, p.color
-            ),
-            Effect::Fade(p) => write!(
-                f,
-                "fade lift={} saturation={} tint={} tint_amount={}",
-                p.lift, p.saturation, p.tint, p.tint_amount
-            ),
-            Effect::Vignette(p) => write!(f, "vignette strength={} start={}", p.strength, p.start),
-            Effect::Leak(p) => write!(
-                f,
-                "leak color={} strength={} size={}",
-                p.color, p.strength, p.size
-            ),
-            Effect::Bloom(p) => write!(
-                f,
-                "bloom threshold={} radius={} strength={}",
-                p.threshold, p.radius, p.strength
-            ),
-            Effect::Liquid(p) => write!(
-                f,
-                "liquid amplitude={} scale={} octaves={} drift={}",
-                p.amplitude, p.scale, p.octaves, p.drift
-            ),
-        }
-    }
 }
 
 /// Effects applied in order, with the seed of their random draws: each
@@ -448,7 +209,7 @@ impl fmt::Display for Recipe {
 
 /// The `name=value` parameters of one effect, each read once; what is
 /// left unread is a mistake. Ranges are read at moment `t`.
-struct Params<'a> {
+pub(super) struct Params<'a> {
     effect: &'a str,
     pairs: &'a [(&'a str, &'a str)],
     read: Vec<bool>,
@@ -492,7 +253,7 @@ impl<'a> Params<'a> {
         found
     }
 
-    fn get<T: FromStr>(&mut self, name: &str, default: T) -> Result<T, Error> {
+    pub(super) fn get<T: FromStr>(&mut self, name: &str, default: T) -> Result<T, Error> {
         match self.text(name) {
             Some(value) => at_moment(value, self.t)
                 .and_then(|now| now.parse().ok())
@@ -502,7 +263,11 @@ impl<'a> Params<'a> {
     }
 
     /// A parameter written `a,b`, each side maybe a range.
-    fn pair<T: FromStr + Copy>(&mut self, name: &str, default: (T, T)) -> Result<(T, T), Error> {
+    pub(super) fn pair<T: FromStr + Copy>(
+        &mut self,
+        name: &str,
+        default: (T, T),
+    ) -> Result<(T, T), Error> {
         match self.text(name) {
             Some(value) => value
                 .split_once(',')
@@ -535,11 +300,17 @@ impl<'a> Params<'a> {
     }
 }
 
+/// Writes a pair `a,b`.
+pub(super) fn pair<T: fmt::Display>((a, b): (T, T)) -> String {
+    format!("{a},{b}")
+}
+
 #[cfg(test)]
 mod tests {
     use image::Rgb;
 
     use super::*;
+    use crate::effects::Size;
 
     #[test]
     fn a_recipe_reads_and_prints_the_same() {
@@ -565,7 +336,18 @@ mod tests {
         );
         assert_eq!(text.parse::<Recipe>().unwrap(), recipe);
         for name in NAMES {
-            assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), name);
+            assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), *name);
+        }
+        assert_eq!(NAMES.len(), 17);
+    }
+
+    #[test]
+    fn every_effect_prints_all_its_parameters_and_reads_them_back() {
+        for name in NAMES {
+            let recipe = name.parse::<Recipe>().unwrap();
+            let text = recipe.to_string();
+            assert_eq!(text.parse::<Recipe>().unwrap(), recipe, "{text}");
+            assert!(text.matches('=').count() >= 2, "{text}");
         }
     }
 
@@ -576,9 +358,10 @@ mod tests {
             Effect::SliceShift(p) => (p.shift, p.height, p.slices),
             _ => panic!(),
         };
-        assert_eq!(at(0.0), (20, (4, 10), 3));
-        assert_eq!(at(0.5), (90, (6, 10), 3));
-        assert_eq!(at(1.0), (160, (8, 10), 3));
+        let size = Size::new;
+        assert_eq!(at(0.0), (size(20), (size(4), size(10)), 3));
+        assert_eq!(at(0.5), (size(90), (size(6), size(10)), 3));
+        assert_eq!(at(1.0), (size(160), (size(8), size(10)), 3));
         assert_eq!(
             Recipe::from_words(&words).unwrap().steps[0],
             Recipe::from_words_at(&words, 0.0).unwrap().steps[0]
@@ -606,6 +389,14 @@ mod tests {
                 effect: "loss".into(),
                 name: "shift".into(),
                 value: "big".into()
+            })
+        );
+        assert_eq!(
+            "vignette strength=150".parse::<Recipe>(),
+            Err(Error::BadValue {
+                effect: "vignette".into(),
+                name: "strength".into(),
+                value: "150".into()
             })
         );
         assert_eq!("seed=3".parse::<Recipe>(), Err(Error::Empty));
