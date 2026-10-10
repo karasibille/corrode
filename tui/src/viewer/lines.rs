@@ -2,6 +2,7 @@
 //! the progress of culling at the bottom.
 
 use corrode_core::marks::ColorLabel;
+use corrode_core::selection;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 
@@ -39,6 +40,16 @@ impl Viewer {
             }
             Some(Err(_)) => parts.push((1, vec![Span::from("unreadable sidecar").fg(Color::Red)])),
             None => {}
+        }
+        if selection::is_sent(&self.shots[index], &self.dir) {
+            parts.push((
+                1,
+                vec![
+                    Span::from(format!("→ {}", selection::FOLDER))
+                        .fg(Color::Cyan)
+                        .bold(),
+                ],
+            ));
         }
         let (burst, complete) = self.burst();
         parts.push((

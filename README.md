@@ -38,6 +38,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | r y g b p | Red, yellow, green, blue, purple label (again to clear) |
 | x, Delete | Reject / restore |
 | f | Filter: all, unsorted (left to cull), kept, rejected |
+| m | Move the kept shots, whole (JPEG, RAW, sidecars), to a `selection/` folder next to them, to open in RawTherapee; asks first |
 | d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it, shown once written (D: even when none were found) |
 | z, Enter | 100% zoom; arrows then move around, Ctrl+arrows change shot at the same spot to compare |
 | + / - | Zoom in (200, 400, 800%) / out |
@@ -61,6 +62,7 @@ There is nothing to save: marks are written as they are set. The line above the 
 | `cameras` | What is specific to a make: the Panasonic focus point and its orientation quirk |
 | `cache` | Keeps the shooting information and thumbnails between sessions, one file per directory |
 | `bursts` | Groups shots taken in quick succession |
+| `selection` | Moves the kept shots, with their sidecars, to the shoot's `selection/` folder |
 | `sharpness` | Scores the sharpness of a picture around its focus point |
 | `banding` | Detects the light bands LED lighting leaves with an electronic shutter |
 | `debanding` | Removes those bands from the raw sensor data, per color, by their period |

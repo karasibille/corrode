@@ -77,6 +77,13 @@ impl Viewer {
         );
         key(&mut lines, "x  Delete", "reject / restore this shot");
 
+        section(&mut lines, "Sending the selection");
+        key(
+            &mut lines,
+            "m",
+            "move the kept shots, whole (JPEG, RAW, sidecars), to the selection/ folder next to them, to open it in RawTherapee; asks first, m again confirms. The shots stay in the list, marked → selection.",
+        );
+
         section(&mut lines, "Filters");
         key(
             &mut lines,

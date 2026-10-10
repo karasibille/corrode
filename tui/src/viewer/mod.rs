@@ -110,6 +110,9 @@ pub struct Viewer {
     config: Result<Config, String>,
     /// Result of the last action, shown until the next key.
     message: Option<Result<String, String>>,
+    /// Whether the next `m` sends the kept shots: the first asks, the
+    /// second does it, any other key gives up.
+    confirm_send: bool,
     /// Whether the full help is shown instead of the shots.
     help: bool,
     /// How many lines the help is scrolled down.
@@ -160,6 +163,7 @@ impl Viewer {
             view: (0, 0),
             config,
             message: None,
+            confirm_send: false,
             help: false,
             help_scroll: 0,
         }
@@ -389,4 +393,97 @@ impl Viewer {
 /// shot is decoded, leaving a core to the interface.
 fn thread_count() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(1, 4))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use corrode_core::marks::ColorLabel;
+    use corrode_core::{pairing, rawtherapee, selection};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+    use super::*;
+
+    /// A shoot of three shots: one rated, one labelled, one rejected.
+    fn shoot() -> tempfile::TempDir {
+        let shoot = tempfile::tempdir().unwrap();
+        let dir = shoot.path();
+        for (name, pp3) in [
+            ("A.RW2", "[General]\nRank=3\nColorLabel=0\nInTrash=false\n"),
+            ("B.JPG", "[General]\nRank=0\nColorLabel=2\nInTrash=false\n"),
+            ("C.JPG", "[General]\nRank=4\nColorLabel=0\nInTrash=true\n"),
+        ] {
+            fs::write(dir.join(name), b"image").unwrap();
+            fs::write(dir.join(format!("{name}.pp3")), pp3).unwrap();
+        }
+        shoot
+    }
+
+    fn viewer(dir: &Path) -> Viewer {
+        let shots = pairing::scan_dir(dir).unwrap();
+        let mut viewer = Viewer::new(
+            dir.to_path_buf(),
+            shots,
+            Picker::halfblocks(),
+            Err("no RawTherapee".to_owned()),
+        );
+        // The marks, as the loader would have read them.
+        for (state, shot) in viewer.states.iter_mut().zip(&viewer.shots) {
+            state.marks = Some(rawtherapee::read_marks(shot).map_err(|err| err.to_string()));
+        }
+        viewer
+    }
+
+    fn press(viewer: &mut Viewer, c: char) {
+        viewer.key(KeyEvent::from(KeyCode::Char(c)));
+    }
+
+    #[test]
+    fn sending_asks_then_moves_the_kept_shots_whole() {
+        let shoot = shoot();
+        let dir = shoot.path();
+        let mut viewer = viewer(dir);
+        assert_eq!(viewer.states[1].marks().unwrap().color, ColorLabel::Yellow);
+
+        press(&mut viewer, 'm');
+        assert!(viewer.confirm_send);
+        assert!(matches!(&viewer.message, Some(Ok(m)) if m.starts_with("move 2 kept shots")));
+        assert!(dir.join("A.RW2").exists());
+
+        press(&mut viewer, 'm');
+        assert!(!viewer.confirm_send);
+        assert!(
+            matches!(&viewer.message, Some(Ok(m)) if m.starts_with("2 shots moved")),
+            "{:?}",
+            viewer.message
+        );
+        let selection = dir.join("selection");
+        for name in ["A.RW2", "A.RW2.pp3", "B.JPG", "B.JPG.pp3"] {
+            assert!(selection.join(name).exists(), "{name}");
+            assert!(!dir.join(name).exists(), "{name}");
+        }
+        assert!(dir.join("C.JPG").exists());
+        assert!(selection::is_sent(&viewer.shots[0], dir));
+        assert!(!selection::is_sent(&viewer.shots[2], dir));
+
+        // Nothing left to send; the sent shots keep their marks.
+        press(&mut viewer, 'm');
+        assert!(matches!(&viewer.message, Some(Err(m)) if m.contains("no kept shot")));
+        assert_eq!(viewer.states[0].marks().unwrap().rank, 3);
+    }
+
+    #[test]
+    fn any_other_key_gives_up_sending() {
+        let shoot = shoot();
+        let mut viewer = viewer(shoot.path());
+        press(&mut viewer, 'm');
+        press(&mut viewer, 'l');
+        assert!(!viewer.confirm_send);
+        assert!(matches!(&viewer.message, Some(Err(m)) if m == "nothing sent"));
+        assert!(shoot.path().join("A.RW2").exists());
+        // The key that gave up was not acted on: still on the first shot.
+        assert_eq!(viewer.app.index, 0);
+    }
 }

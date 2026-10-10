@@ -1,11 +1,11 @@
 //! What the keys do: browsing, marks, bursts, filters, RawTherapee.
 
 use corrode_core::marks::{ColorLabel, Marks};
-use corrode_core::rawtherapee;
+use corrode_core::{rawtherapee, selection};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::Viewer;
-use crate::app::{Command, MarkChange, Mode, burst_around, next_matching};
+use crate::app::{Command, Filter, MarkChange, Mode, burst_around, next_matching};
 use crate::culling;
 use crate::text::rank_key;
 use corrode_core::bursts;
@@ -15,6 +15,15 @@ impl Viewer {
         self.message = None;
         if self.help {
             self.help_key(key.code);
+            return;
+        }
+        if self.confirm_send {
+            self.confirm_send = false;
+            if key.code == KeyCode::Char('m') {
+                self.send_kept();
+            } else {
+                self.message = Some(Err("nothing sent".to_owned()));
+            }
             return;
         }
         // Zoomed, the arrows move around the picture; with Ctrl they
@@ -34,6 +43,7 @@ impl Viewer {
             KeyCode::Char('x') | KeyCode::Delete => Command::Mark(MarkChange::ToggleTrash),
             KeyCode::Char('k') => return self.keep_in_burst(),
             KeyCode::Char('X') => return self.reject_burst(),
+            KeyCode::Char('m') => return self.ask_to_send(),
             KeyCode::Char('d') => return self.deband(false),
             KeyCode::Char('D') => return self.deband(true),
             KeyCode::Char('?') => {
@@ -143,6 +153,80 @@ impl Viewer {
                 "no {} shot among the {read} read",
                 self.filter.name()
             )),
+        });
+    }
+
+    /// The kept shots not sent yet, if every mark is read.
+    fn to_send(&self) -> Result<Vec<usize>, String> {
+        let mut kept = Vec::new();
+        for (index, state) in self.states.iter().enumerate() {
+            if selection::is_sent(&self.shots[index], &self.dir) {
+                continue;
+            }
+            match &state.marks {
+                None => return Err("the marks are still being read, try again in a moment".into()),
+                Some(Err(err)) => {
+                    return Err(format!(
+                        "{}: {err}",
+                        self.shots[index].stem.to_string_lossy()
+                    ));
+                }
+                Some(Ok(marks)) => {
+                    if Filter::Kept.matches(Some(marks)) {
+                        kept.push(index);
+                    }
+                }
+            }
+        }
+        Ok(kept)
+    }
+
+    /// Asks before sending the kept shots to the selection folder.
+    fn ask_to_send(&mut self) {
+        self.message = Some(match self.to_send() {
+            Err(err) => Err(err),
+            Ok(kept) if kept.is_empty() => Err("no kept shot left to send".to_owned()),
+            Ok(kept) => {
+                self.confirm_send = true;
+                Ok(format!(
+                    "move {} kept shots (JPEG, RAW, sidecars) to {}/? m again to confirm, any other key to keep them here",
+                    kept.len(),
+                    selection::FOLDER
+                ))
+            }
+        });
+    }
+
+    /// Moves the kept shots, whole, to the selection folder; they stay
+    /// in the list, at their new place.
+    fn send_kept(&mut self) {
+        let kept = match self.to_send() {
+            Ok(kept) => kept,
+            Err(err) => {
+                self.message = Some(Err(err));
+                return;
+            }
+        };
+        let folder = selection::folder(&self.dir);
+        let (mut sent, mut failed) = (0, None);
+        for index in kept {
+            match selection::send(&self.shots[index], &folder) {
+                Ok(shot) => {
+                    self.shots[index] = shot.clone();
+                    self.loader.replace(index, shot);
+                    sent += 1;
+                }
+                Err(err) => {
+                    failed.get_or_insert(format!(
+                        "{}: {err}",
+                        self.shots[index].stem.to_string_lossy()
+                    ));
+                }
+            }
+        }
+        self.message = Some(match failed {
+            None => Ok(format!("{sent} shots moved to {}/", folder.display())),
+            Some(err) => Err(format!("{sent} shots moved, then {err}")),
         });
     }
 

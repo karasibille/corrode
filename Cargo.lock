@@ -351,6 +351,7 @@ dependencies = [
  "image",
  "ratatui",
  "ratatui-image",
+ "tempfile",
 ]
 
 [[package]]
