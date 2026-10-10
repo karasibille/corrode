@@ -2,7 +2,7 @@
 
 Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and glitch effects. Written in Rust.
 
-> Status: early development. Culling works in the terminal; effects and bulk presets are still to come.
+> Status: early development. Culling, sorting a selection into groups of similar shots and applying a preset in bulk work; the effects are still a library, without an interface yet.
 
 ## Goals
 
@@ -10,7 +10,9 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 - Rate, color-label and reject photos from the keyboard
 - Store marks in RawTherapee `.pp3` sidecars (`Rank`, `ColorLabel`, `InTrash`), no proprietary database
 - Open the matching RAW files in RawTherapee
-- Later: group photos by color/brightness, apply presets in bulk, creative glitch effects
+- Sort a selection into folders of shots that look alike (light, colour, time taken)
+- Apply a RawTherapee preset to a whole selection, adjusted for each group
+- Later: creative glitch effects, live
 
 ## Workspace
 
@@ -41,6 +43,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | x, Delete | Reject / restore |
 | f | Filter: all, unsorted (left to cull), kept, rejected |
 | m | Move the kept shots, whole (JPEG, RAW, sidecars), to a `selection/` folder next to them, to open in RawTherapee; asks first |
+| G | Sort the shots of `selection/` into folders of shots that look alike, named after the colour of the light and the first shot (`bleu-_1117041`); asks first |
 | d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it, shown once written (D: even when none were found) |
 | z, Enter | 100% zoom; arrows then move around, Ctrl+arrows change shot at the same spot to compare |
 | + / - | Zoom in (200, 400, 800%) / out |
@@ -52,13 +55,22 @@ There is nothing to save: marks are written as they are set. The line above the 
 
 ## Presets
 
+Sort the selection into groups first, with `G` in `corrode-select`, or without the interface:
+
 ```sh
-corrode-preset selection/ --preset mon-preset.pp3 --ref _1139372            # what would change
-corrode-preset selection/ --preset mon-preset.pp3 --ref _1139372 --save-adjustments ajustements.txt
-corrode-preset selection/ --preset mon-preset.pp3 --ref _1139372 --adjustments ajustements.txt --apply
+cargo run --release -p corrode-core --example similar -- selection/ --sheets /tmp/sheets   # list the groups, contact sheets to check them
+cargo run --release -p corrode-core --example similar -- selection/ --move                 # then sort the shots into folders
 ```
 
-Make a preset from one shot in RawTherapee, then apply it to a whole selection sorted into subfolders. Each group gets the preset with its own exposure compensation, worked out from how light or dark the group is next to the shot the preset was made on (`--ref`). Any other setting can be changed per group in a small file (`[group]`, then `Section.Key=value`). The marks, crop, rotation and white balance of each shot are kept. Nothing is written without `--apply`, and each sidecar is copied to a `.bak` first.
+Then make a preset from one shot in RawTherapee and apply it to every group:
+
+```sh
+corrode-preset selection/ --preset my-preset.pp3 --ref _1139372            # what would change
+corrode-preset selection/ --preset my-preset.pp3 --ref _1139372 --save-adjustments adjustments.txt
+corrode-preset selection/ --preset my-preset.pp3 --ref _1139372 --adjustments adjustments.txt --apply
+```
+
+Each folder is a group, and each shot left at the top level is a group of its own. Each group gets the preset with its own exposure compensation, worked out from how light or dark the group is next to the shot the preset was made on (`--ref`). Any other setting can be changed per group in a small file (`[group]`, then `Section.Key=value`). The marks, crop, rotation and white balance of each shot are kept. Nothing is written without `--apply`, and each sidecar is copied to a `.bak` first.
 
 ## Core library
 
@@ -66,7 +78,7 @@ Make a preset from one shot in RawTherapee, then apply it to a whole selection s
 |---|---|
 | `pairing` | Groups the JPEG and RAW files of a directory into shots, by base name |
 | `marks` | The rating, color label and rejection culling sets on a shot |
-| `pp3` | Reads and writes the marks of a RawTherapee sidecar, keeping every other byte |
+| `pp3` | Reads and writes a RawTherapee sidecar: the marks, any key, a whole section; every other byte is kept |
 | `rawtherapee` | Reads RawTherapee's settings, picks a shot's sidecar, creates it from the default profile, opens RawTherapee |
 | `exif` | Date to the millisecond, exposure, aperture, ISO, focal length, camera, lens and focus point, from the head of a file |
 | `picture` | Decodes a shot upright: its thumbnail, the preview embedded in the JPEG or the RAW, or the full image |
@@ -74,7 +86,10 @@ Make a preset from one shot in RawTherapee, then apply it to a whole selection s
 | `cameras` | What is specific to a make: the Panasonic focus point and its orientation quirk |
 | `cache` | Keeps the shooting information and thumbnails between sessions, one file per directory |
 | `bursts` | Groups shots taken in quick succession |
-| `selection` | Moves the kept shots, with their sidecars, to the shoot's `selection/` folder |
+| `selection` | Moves the kept shots, with their sidecars, to the shoot's `selection/` folder, then sorts them into subfolders by group |
+| `similarity` | Tells how much shots look alike (colour, layout, light, time taken), groups them and names the colour of each group's light |
+| `look` | Puts the look of a reference profile on other profiles, keeping the marks, framing and white balance of each shot |
+| `preset` | Applies a preset to the groups of a selection, with an exposure and settings of their own for each |
 | `sharpness` | Scores the sharpness of a picture around its focus point |
 | `banding` | Detects the light bands LED lighting leaves with an electronic shutter |
 | `debanding` | Removes those bands from the raw sensor data, per color, by their period |
@@ -90,6 +105,7 @@ cargo run --release -p corrode-core --example info -- sandbox              # mar
 cargo run -p corrode-core --example marks -- set --rank 4 sandbox/P1011259.JPG
 cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/*.JPG
 cargo run --release -p corrode-core --example bursts -- sandbox --list
+cargo run --release -p corrode-core --example similar -- sandbox --sheets sandbox/out   # groups of similar shots
 cargo run --release -p corrode-core --example sharpness -- sandbox
 cargo run --release -p corrode-core --example deband -- sandbox/banding/109/_1094086.RW2
 ```
