@@ -4,6 +4,7 @@
 mod bands;
 mod deband;
 mod effect;
+mod ghost;
 mod gif;
 mod group;
 mod preset;
@@ -37,6 +38,8 @@ enum Command {
     Effect(effect::Args),
     /// List the effects, or tell the parameters of one
     Effects(effect::HelpArgs),
+    /// Lay the frames of a burst over one another, so that each pose leaves a ghost (experimental)
+    Ghost(ghost::Args),
     /// Make an animated GIF from a picture and a recipe whose ranges move
     Gif(gif::Args),
     /// Look for the light bands LED lighting leaves, in every shot of a directory
@@ -52,6 +55,7 @@ fn main() -> ExitCode {
         Command::Preset(args) => preset::run(args),
         Command::Effect(args) => effect::run(args),
         Command::Effects(args) => effect::help(args),
+        Command::Ghost(args) => ghost::run(args),
         Command::Gif(args) => gif::run(args),
         Command::Bands(args) => bands::run(args),
         Command::Deband(args) => deband::run(args),

@@ -48,3 +48,23 @@ corrode effect docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb ro
 - `falsecolor`: the colours are swapped or turned round the colour wheel (red and blue swapped is the look of infrared film). It can make the colour stronger, and be limited to one range of colours so that the rest stays as it was.
 - `remap`: several colours each sent their own way at once, such as the sky towards violet and the grass towards red, without one change feeding another.
 - `onepoint` (one point colour): one colour is kept and everything else goes grey, as a yellow that stays vivid in a black and white picture.
+
+## Ghosts: the frames of a burst in one picture
+
+> **Experimental.** `corrode ghost` is still being tuned: its options, their defaults and the way the frames are mixed may change.
+
+`corrode ghost` is not a recipe effect: it takes a few frames of the same scene taken one after another, three or four are enough, cuts each to a window round the subject and lays them over one another. The subject stays in the same place and each pose leaves a ghost round it, a dancer with many arms and legs.
+
+```sh
+corrode ghost burst1.RW2 burst2.RW2 burst3.RW2 burst4.RW2 -o ghosts.jpg --centre 50,44 --zoom 2.2
+```
+
+- `--blend lighten` (the default) keeps the brighter of two pixels, so the poses stay sharp and stack: it suits a bright subject on a dark stage. `screen` adds the lights, `average` gives every pose the same faint weight, and `over` mixes the frames like see-through layers, each ghost weighing the `--opacity` given when the main frame weighs 1 (1 gives all the frames the same weight, 0.5 shows the ghosts at half), so that no light is added and the poses show through one another.
+- `--opacity 0.45` makes the ghosts transparent; the main frame is always whole, the middle one unless `--main N` says which (counting from 1).
+- `--zoom 2.2` cuts the result to the frame divided by 2.2, round the subject.
+- The subject is the point the camera focused on when every file has one (`--align af`), else the point `--centre x,y`, in percent of the frame, in every frame (`--align fixed`): it is for a camera that does not move.
+- `--align track` finds the subject in the frames themselves, for a subject that crosses the frame while the camera stays still (at least three frames): what changes against the middle value of each pixel over all the frames is the subject, and its centre is where the window goes. It does not suit a subject that stays in place, a dancer turning on the spot for example: what does not move is part of that middle value, so the window would follow the limbs and not the body. Use `fixed` or `af` then.
+- `--pin-background` keeps the background of the main frame: of the other frames, only what changes against the middle value of each pixel, the subject, is laid over it, so that a lamp or the floor is not repeated where the windows moved. It goes well with `--align track`, which moves the windows. It needs at least three frames.
+- `--register` lines the background of the frames up on the main one first, measured on the lights, the lamp above all, because the camera moves a little between two shots and a lamp is then seen once for each frame. The shift found is printed for each frame. It is the option to use on a burst shot by hand; it works with the others.
+- It uses the preview embedded in each file, smaller and better looking than a development of the RAW (the preview of a DNG made by `corrode deband` is 1024 pixels long, so give `--zoom` a value that keeps the result large enough); `--full` uses the full-size picture, and `--width` reduces the result.
+

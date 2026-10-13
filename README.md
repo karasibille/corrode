@@ -52,7 +52,7 @@ corrode gif docs/examples/photo.jpg glitch-mix.gif --frames 14 --fps 10 --width 
 
 - [Culling with `corrode select`](docs/culling.md): the keys, the marks, the bursts, sending the kept shots to `selection/` and sorting them into groups.
 - [Presets with `corrode preset`, `corrode group`](docs/presets.md): one retouching applied to a whole selection, group by group.
-- [Effects](docs/effects.md): the recipes, what each of the 22 effects does and how to write colours and sizes.
+- [Effects](docs/effects.md): the recipes, what each of the 22 effects does and how to write colours and sizes, and the ghosts of a burst.
 - [The crates and the core library](docs/library.md): how the code is divided, and the examples to try.
 
 ## Installation
@@ -65,7 +65,7 @@ cd corrode
 cargo install --path cli --locked    # the corrode program
 ```
 
-The `corrode` program goes to `~/.cargo/bin`, which has to be in your `PATH`. Without installing, write `cargo run --release -p corrode --` instead of `corrode` in the commands of the documentation. `corrode --help` lists the commands: `select`, `group`, `preset`, `effect`, `effects`, `gif`, `bands` and `deband`. They need RawTherapee and a terminal that shows pictures; see [Requirements](#requirements).
+The `corrode` program goes to `~/.cargo/bin`, which has to be in your `PATH`. Without installing, write `cargo run --release -p corrode --` instead of `corrode` in the commands of the documentation. `corrode --help` lists the commands: `select`, `group`, `preset`, `effect`, `effects`, `ghost`, `gif`, `bands` and `deband`. They need RawTherapee and a terminal that shows pictures; see [Requirements](#requirements).
 
 ## Requirements
 

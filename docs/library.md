@@ -11,7 +11,7 @@
 | `ui/` (`corrode-ui`) | What the terminal interfaces share: background jobs, terminal graphics, lines that fit |
 | `select/` (`corrode-select`) | The culling viewer in the terminal (`ratatui` + `ratatui-image`) |
 | `preset/` (`corrode-preset`) | Applying a RawTherapee preset to a whole selection, group by group |
-| `cli/` (`corrode`) | The `corrode` program: `select`, `group`, `preset`, `effect`, `effects`, `gif`, `bands` and `deband`, one command for the other crates |
+| `cli/` (`corrode`) | The `corrode` program: `select`, `group`, `preset`, `effect`, `effects`, `ghost`, `gif`, `bands` and `deband`, one command for the other crates |
 
 ## Core library
 
