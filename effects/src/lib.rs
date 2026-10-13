@@ -6,6 +6,7 @@
 
 mod colour;
 mod film;
+mod ghost;
 mod glitch;
 mod grade;
 mod jpeg;
@@ -14,6 +15,7 @@ mod parallel;
 mod print;
 mod random;
 mod recipe;
+mod register;
 mod remap;
 mod sort;
 mod spin;
@@ -26,6 +28,7 @@ pub use film::{
     Aberration, Blend, Bloom, Drag, DragKind, Fade, Grain, Leak, Vignette, aberration, bloom, drag,
     fade, grain, leak, vignette,
 };
+pub use ghost::{Ghost, GhostBlend, ghost, track};
 pub use glitch::{
     ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
 };
@@ -36,6 +39,7 @@ pub use grade::{
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, ParamInfo, Recipe, describe};
+pub use register::{register, shifted};
 pub use remap::{HueMap, MAX_MOVES, Remap, remap};
 pub use sort::{Direction, PixelSort, pixel_sort};
 pub use spin::{Spin, spin};
@@ -58,4 +62,6 @@ pub enum Error {
     Empty,
     #[error("{0}")]
     Jpeg(String),
+    #[error("ghost: {0}")]
+    Frames(String),
 }
