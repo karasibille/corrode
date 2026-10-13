@@ -6,7 +6,9 @@
 //! cargo run -p corrode-effects --example gallery
 //! ```
 //!
-//! Each line of `recipes.txt` is `name | title | recipe`; the picture is
+//! Each cell is a picture, its title and a closed fold-out with the
+//! recipe and the options of the effect. Each line of `recipes.txt` is
+//! `name | title | recipe`; the picture is
 //! `docs/examples/<name>.jpg` (see `generate.sh`). The table goes between
 //! the markers `<!-- gallery:start -->` and `<!-- gallery:end -->`.
 
@@ -36,9 +38,12 @@ fn html(text: &str) -> String {
     out
 }
 
-/// The fold-out list of the options of the effect a recipe starts with.
-fn options(recipe: &str) -> Result<String, String> {
-    let body = if recipe.contains('+') {
+/// The fold-out of a picture: its recipe, then the options of the effect
+/// the recipe starts with. It is closed, so that nothing long in it
+/// widens the column of the table, which is what made the pictures of a
+/// phone take different sizes.
+fn fold_out(recipe: &str) -> Result<String, String> {
+    let options = if recipe.contains('+') {
         "effects joined by <code>+</code> run in order, each with its own options<br>".to_owned()
     } else {
         let effect = recipe.split(' ').next().unwrap_or_default();
@@ -49,7 +54,8 @@ fn options(recipe: &str) -> Result<String, String> {
             .collect()
     };
     Ok(format!(
-        "<details><summary>options</summary><div align=\"left\">{body}</div></details>"
+        "<details><summary>recipe and options</summary><div align=\"left\"><code>{}</code><br><br>{options}</div></details>",
+        html(recipe)
     ))
 }
 
@@ -69,10 +75,9 @@ fn run() -> Result<(), String> {
             return Err(format!("not `name | title | recipe`: {line}"));
         };
         cells.push(format!(
-            "<td width=\"33%\" align=\"center\" valign=\"top\"><img src=\"docs/examples/{name}.jpg\" width=\"100%\"><br><b>{}</b><br><code>{}</code>{}</td>",
+            "<td width=\"33%\" align=\"center\" valign=\"top\"><img src=\"docs/examples/{name}.jpg\" width=\"100%\"><br><b>{}</b>{}</td>",
             html(title),
-            html(recipe),
-            options(recipe)?
+            fold_out(recipe)?
         ));
     }
     let rows: Vec<String> = cells
