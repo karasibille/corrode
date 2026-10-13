@@ -1,0 +1,27 @@
+# name | recipe, applied to photo.jpg with seed=7
+loss | loss
+bend | bend quality=90 hits=8
+sort | sort
+slice | slice
+stretch | stretch
+split | split
+dither | dither
+dither-bayer | dither method=bayer
+duotone | duotone
+tritone | tritone
+scanlines | scanlines
+drag | drag
+drag-zoom | drag kind=zoom
+aberration | aberration
+grain | grain
+fade | fade
+vignette | vignette
+leak | leak
+bloom | bloom
+liquid | liquid
+falsecolor | falsecolor
+falsecolor-rotate | falsecolor order=rgb rotate=120
+remap | remap map=blue:orange saturation=150
+spin | spin angle=14
+spin-ghosts | spin angle=24 steps=5 center=30,60
+chain | sort low=40 high=220 + slice slices=12 split=true + grain
