@@ -7,12 +7,14 @@
 mod colour;
 mod film;
 mod glitch;
+mod grade;
 mod jpeg;
 mod parallel;
 mod print;
 mod random;
 mod recipe;
 mod sort;
+mod spin;
 mod units;
 mod warp;
 
@@ -24,11 +26,16 @@ pub use film::{
 pub use glitch::{
     ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
 };
+pub use grade::{
+    ChannelOrder, Channels, FalseColor, MaybeHue, OnePoint, Tritone, false_color, one_point,
+    tritone,
+};
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, Recipe};
 pub use sort::{Direction, PixelSort, pixel_sort};
-pub use units::{Percent, REFERENCE_WIDTH, Size, scale_of};
+pub use spin::{Spin, spin};
+pub use units::{Percent, Point, REFERENCE_WIDTH, Size, scale_of};
 pub use warp::{Liquid, liquid};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

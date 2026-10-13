@@ -87,6 +87,35 @@ impl fmt::Display for Size {
     }
 }
 
+/// A point of the picture, as shares of its width and its height, or no
+/// point: `40,60` is a bit left of the middle, a bit below. `none` is
+/// written when there is no point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Point(pub Option<(Percent, Percent)>);
+
+impl FromStr for Point {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Point, String> {
+        if text.trim() == "none" {
+            return Ok(Point(None));
+        }
+        let (x, y) = text
+            .split_once(',')
+            .ok_or_else(|| format!("'{text}' is not a point (x,y in percent, or none)"))?;
+        Ok(Point(Some((x.trim().parse()?, y.trim().parse()?))))
+    }
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some((x, y)) => write!(f, "{x},{y}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
 /// How many actual pixels a reference pixel is on a picture of this
 /// width.
 pub fn scale_of(width: u32) -> f32 {
@@ -105,6 +134,18 @@ mod tests {
         assert_eq!(Percent::new(150).value(), 100);
         assert_eq!(Percent::new(50).fraction(), 0.5);
         assert_eq!(Percent::new(7).to_string(), "7");
+    }
+
+    #[test]
+    fn a_point_is_two_shares_or_none() {
+        assert_eq!("none".parse::<Point>(), Ok(Point(None)));
+        let point: Point = "40, 60".parse().unwrap();
+        assert_eq!(point.0, Some((Percent::new(40), Percent::new(60))));
+        assert_eq!(point.to_string(), "40,60");
+        assert_eq!(Point(None).to_string(), "none");
+        for bad in ["", "40", "40,101", "a,b", "40,60,1"] {
+            assert!(bad.parse::<Point>().is_err(), "{bad}");
+        }
     }
 
     #[test]

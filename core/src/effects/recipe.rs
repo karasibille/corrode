@@ -26,9 +26,11 @@ use image::RgbImage;
 use super::Error;
 use super::film::{Aberration, Bloom, Drag, Fade, Grain, Leak, Vignette};
 use super::glitch::{ChannelSplit, PixelStretch, SliceShift};
+use super::grade::{FalseColor, OnePoint, Tritone};
 use super::jpeg::{Databend, GenerationLoss};
 use super::print::{Dither, Duotone, Scanlines};
 use super::sort::PixelSort;
+use super::spin::Spin;
 use super::warp::Liquid;
 
 /// What an effect tells about itself, so that a recipe can name it,
@@ -118,6 +120,10 @@ effects! {
     Leak(Leak),
     Bloom(Bloom),
     Liquid(Liquid),
+    OnePoint(OnePoint),
+    Tritone(Tritone),
+    FalseColor(FalseColor),
+    Spin(Spin),
 }
 
 /// Effects applied in order, with the seed of their random draws: each
@@ -338,7 +344,7 @@ mod tests {
         for name in NAMES {
             assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), *name);
         }
-        assert_eq!(NAMES.len(), 17);
+        assert_eq!(NAMES.len(), 21);
     }
 
     #[test]

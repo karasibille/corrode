@@ -35,37 +35,52 @@ pub struct Color(pub Rgb<u8>);
 impl Color {
     /// The colour of a hue, in degrees, at full saturation and value.
     pub fn from_hue(hue: Hue) -> Color {
-        let h = hue.degrees() / 60.0;
-        let x = 1.0 - (h % 2.0 - 1.0).abs();
-        let (r, g, b) = match h as u32 {
-            0 => (1.0, x, 0.0),
-            1 => (x, 1.0, 0.0),
-            2 => (0.0, 1.0, x),
-            3 => (0.0, x, 1.0),
-            4 => (x, 0.0, 1.0),
-            _ => (1.0, 0.0, x),
-        };
+        let [r, g, b] = from_hsv([hue.degrees(), 1.0, 1.0]);
         let byte = |value: f32| (value * 255.0).round() as u8;
         Color(Rgb([byte(r), byte(g), byte(b)]))
     }
 
     /// The hue of the colour, or `None` for a grey.
     pub fn hue(self) -> Option<Hue> {
-        let [r, g, b] = self.0.0.map(|channel| f32::from(channel) / 255.0);
-        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-        if max <= 0.0 || (max - min) / max < NO_HUE {
-            return None;
-        }
-        let spread = max - min;
-        let sector = if max == r {
-            ((g - b) / spread).rem_euclid(6.0)
-        } else if max == g {
-            (b - r) / spread + 2.0
-        } else {
-            (r - g) / spread + 4.0
-        };
-        Some(Hue::new(sector * 60.0))
+        let [hue, saturation, _] = to_hsv(self.0.0.map(|channel| f32::from(channel) / 255.0));
+        (saturation >= NO_HUE).then(|| Hue::new(hue))
     }
+}
+
+/// Hue in degrees, saturation and value of a colour whose channels go from
+/// 0 to 1.
+pub(super) fn to_hsv([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let spread = max - min;
+    let saturation = if max <= 0.0 { 0.0 } else { spread / max };
+    let hue = if spread <= 0.0 {
+        0.0
+    } else if max == r {
+        ((g - b) / spread).rem_euclid(6.0) * 60.0
+    } else if max == g {
+        ((b - r) / spread + 2.0) * 60.0
+    } else {
+        ((r - g) / spread + 4.0) * 60.0
+    };
+    [hue, saturation, max]
+}
+
+/// The channels, 0 to 1, of a colour given by hue in degrees, saturation
+/// and value.
+pub(super) fn from_hsv([hue, saturation, value]: [f32; 3]) -> [f32; 3] {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let x = 1.0 - (h % 2.0 - 1.0).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    let floor = value * (1.0 - saturation);
+    let chroma = value * saturation;
+    [floor + r * chroma, floor + g * chroma, floor + b * chroma]
 }
 
 /// A hue in degrees, from 0 up to 360 not included: 0 red, 120 green,
@@ -76,9 +91,11 @@ impl Color {
 pub struct Hue(f32);
 
 impl Hue {
-    /// A hue, any number of degrees being brought back into the circle.
+    /// A hue, any number of degrees being brought back into the circle and
+    /// rounded to a tenth of a degree, the precision it is written with,
+    /// so that it reads back as it was.
     pub fn new(degrees: f32) -> Hue {
-        Hue(degrees.rem_euclid(360.0))
+        Hue(((degrees * 10.0).round() / 10.0).rem_euclid(360.0))
     }
 
     pub fn degrees(self) -> f32 {
@@ -221,6 +238,27 @@ mod tests {
         // Digits only need the #, or they are degrees.
         assert_eq!(hue("#e02020"), hue("red"));
         assert_eq!(hue("120"), 120.0);
+    }
+
+    #[test]
+    fn hsv_goes_there_and_back() {
+        for rgb in [
+            [0.9, 0.1, 0.1],
+            [0.2, 0.7, 0.3],
+            [0.1, 0.2, 0.9],
+            [0.5, 0.5, 0.5],
+            [0.0, 0.0, 0.0],
+        ] {
+            let back = from_hsv(to_hsv(rgb));
+            for channel in 0..3 {
+                assert!(
+                    (rgb[channel] - back[channel]).abs() < 1e-5,
+                    "{rgb:?} {back:?}"
+                );
+            }
+        }
+        assert_eq!(to_hsv([1.0, 0.0, 0.0]), [0.0, 1.0, 1.0]);
+        assert_eq!(to_hsv([0.0, 0.0, 1.0])[0], 240.0);
     }
 
     #[test]
