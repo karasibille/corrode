@@ -129,6 +129,12 @@ pub(super) fn brightness(pixel: Rgb<u8>) -> u8 {
 
 impl Spec for PixelSort {
     const NAME: &'static str = "sort";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("direction", "`horizontal` or `vertical`"),
+        ("low", "darkest brightness that is sorted, 0 to 255"),
+        ("high", "brightest brightness that is sorted, 0 to 255"),
+        ("reverse", "sort from bright to dark instead"),
+    ];
 
     fn parse(params: &mut Params) -> Result<PixelSort, Error> {
         let d = PixelSort::default();

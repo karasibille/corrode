@@ -116,6 +116,15 @@ impl Noise {
 
 impl Spec for Liquid {
     const NAME: &'static str = "liquid";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("amplitude", "how far a pixel can be pushed, in pixels"),
+        ("scale", "size of the waves, in pixels"),
+        ("octaves", "layers of finer waves; 1 is smooth, 3 is choppy"),
+        (
+            "drift",
+            "how far the waves have drifted, in pixels; moving it makes the water flow",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<Liquid, Error> {
         let d = Liquid::default();

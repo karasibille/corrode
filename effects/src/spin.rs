@@ -94,6 +94,21 @@ pub fn spin(image: &RgbImage, params: Spin) -> RgbImage {
 
 impl Spec for Spin {
     const NAME: &'static str = "spin";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("angle", "how far it turns, in degrees"),
+        (
+            "center",
+            "`x,y` centre of the turn, in percent of the width and height",
+        ),
+        (
+            "steps",
+            "positions blended; 0 takes as many as each pixel needs, 5 gives separate ghosts",
+        ),
+        (
+            "mix",
+            "how much of the smear shows over the sharp picture, 0 to 100",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<Spin, Error> {
         let d = Spin::default();

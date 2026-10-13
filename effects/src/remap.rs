@@ -161,6 +161,26 @@ pub fn remap(image: &RgbImage, params: Remap) -> RgbImage {
 
 impl Spec for Remap {
     const NAME: &'static str = "remap";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "map",
+            "pairs `from:to` such as `blue:orange,green:red`, each hue sent to another; up to 8",
+        ),
+        ("width", "degrees either side of a hue that are moved whole"),
+        ("soft", "degrees over which the move fades"),
+        (
+            "smooth",
+            "how soft the edge of a zone is, in percent of the long side of the picture; a speck of another colour inside a zone is moved with the rest; 0 judges each pixel alone",
+        ),
+        (
+            "saturation",
+            "strength of the moved colours, 0 to 400; 100 leaves it",
+        ),
+        (
+            "mix",
+            "how much of the result shows over the picture, 0 to 100",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<Remap, Error> {
         let d = Remap::default();

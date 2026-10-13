@@ -225,6 +225,14 @@ pub fn scanlines(image: &RgbImage, params: Scanlines) -> RgbImage {
 
 impl Spec for Dither {
     const NAME: &'static str = "dither";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "method",
+            "`diffusion` (scattered dots) or `bayer` (regular pattern)",
+        ),
+        ("size", "size of a dot, in pixels"),
+        ("mid", "brightness, 0 to 255, that comes out mid-grey"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Dither, Error> {
         let d = Dither::default();
@@ -250,6 +258,13 @@ impl Spec for Dither {
 
 impl Spec for Duotone {
     const NAME: &'static str = "duotone";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "dark",
+            "ink of the shadows; a colour is hex, a name or a hue",
+        ),
+        ("light", "ink of the lights"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Duotone, Error> {
         let d = Duotone::default();
@@ -270,6 +285,11 @@ impl Spec for Duotone {
 
 impl Spec for Scanlines {
     const NAME: &'static str = "scanlines";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("period", "rows from one line to the next"),
+        ("thickness", "rows a line is thick"),
+        ("strength", "how dark the lines are, 0 to 100"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Scanlines, Error> {
         let d = Scanlines::default();

@@ -23,7 +23,7 @@ use std::process::{Command, ExitCode};
 use std::time::Instant;
 
 use corrode_core::{pairing, picture};
-use corrode_effects::{NAMES, Recipe};
+use corrode_effects::{NAMES, Recipe, describe};
 
 /// Shows a picture in the terminal with kitty's icat, else chafa.
 pub fn show(path: &Path) {
@@ -82,11 +82,42 @@ fn run(input: &Path, output: &Path, words: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// What an effect is told by: its parameters, their defaults and what
+/// they do; the names of all the effects when none is given.
+fn help(effect: Option<&str>) -> ExitCode {
+    let Some(effect) = effect else {
+        println!("effects: {}", NAMES.join(", "));
+        println!("effects help <effect> tells the parameters of one");
+        return ExitCode::SUCCESS;
+    };
+    match describe(effect) {
+        Ok(params) => {
+            println!("{effect}");
+            for param in params {
+                println!(
+                    "  {}={}  {}",
+                    param.name,
+                    param.default,
+                    param.help.replace('`', "")
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("help") {
+        return help(args.get(1).map(String::as_str));
+    }
     let [input, output, words @ ..] = args.as_slice() else {
         eprintln!(
-            "usage: effects <image> <output.jpg> [show=true] [seed=N] <effect> [name=value]... [+ <effect> ...]\neffects: {}",
+            "usage: effects <image> <output.jpg> [show=true] [seed=N] <effect> [name=value]... [+ <effect> ...]\n       effects help [<effect>]\neffects: {}",
             NAMES.join(", ")
         );
         return ExitCode::FAILURE;

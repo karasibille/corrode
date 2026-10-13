@@ -35,7 +35,7 @@ pub use grade::{
 };
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
-pub use recipe::{Effect, NAMES, Recipe};
+pub use recipe::{Effect, NAMES, ParamInfo, Recipe, describe};
 pub use remap::{HueMap, MAX_MOVES, Remap, remap};
 pub use sort::{Direction, PixelSort, pixel_sort};
 pub use spin::{Spin, spin};

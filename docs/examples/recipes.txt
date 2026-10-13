@@ -1,29 +1,30 @@
-# name | recipe, applied to photo.jpg with seed=7
-loss | loss
-bend | bend
-sort | sort
-slice | slice
-stretch | stretch
-split | split
-dither | dither
-dither-bayer | dither method=bayer
-duotone | duotone
-tritone | tritone
-scanlines | scanlines
-drag | drag
-drag-zoom | drag kind=zoom
-aberration | aberration
-grain | grain
-fade | fade
-vignette | vignette
-leak | leak
-bloom | bloom
-liquid | liquid
-falsecolor | falsecolor
-falsecolor-rotate | falsecolor order=rgb rotate=120
-onepoint | onepoint hue=80deg width=35 soft=30 rest=0
-falsecolor-sky | falsecolor order=rgb rotate=45 saturation=200 only=blue width=25 soft=25
-remap | remap map=blue:orange,green:red saturation=130
-spin | spin angle=14
-spin-ghosts | spin angle=24 steps=5 center=30,60
-chain | sort low=40 high=220 + slice slices=12 split=true + grain
+# name | title | recipe, applied to photo.jpg with seed=7
+# The README gallery is made from this file: sh docs/examples/generate.sh
+loss | generation loss | loss
+bend | databending | bend
+sort | pixel sorting | sort
+slice | slice shift | slice
+stretch | pixel stretch | stretch
+split | channel split | split
+dither | dither, error diffusion | dither
+dither-bayer | dither, ordered matrix | dither method=bayer
+duotone | duotone | duotone
+tritone | tritone | tritone
+scanlines | scanlines | scanlines
+drag | drag, a flash over a slow shutter | drag
+drag-zoom | drag, zooming | drag kind=zoom
+aberration | chromatic aberration | aberration
+grain | film grain | grain
+fade | faded print | fade
+vignette | vignette | vignette
+leak | light leak | leak
+bloom | bloom | bloom
+liquid | liquid distortion | liquid
+falsecolor | false colour (red and blue swapped) | falsecolor
+falsecolor-rotate | false colour, hues turned | falsecolor order=rgb rotate=120
+onepoint | one point colour | onepoint hue=80deg width=35 soft=30 rest=0
+falsecolor-sky | false colour, only the sky | falsecolor order=rgb rotate=45 saturation=200 only=blue width=25 soft=25
+remap | remap, a hue sent elsewhere | remap map=blue:orange,green:red saturation=130
+spin | spin, a turning smear | spin angle=14
+spin-ghosts | spin, a few ghosts | spin angle=24 steps=5 center=30,60
+chain | three effects in a row | sort low=40 high=220 + slice slices=12 split=true + grain

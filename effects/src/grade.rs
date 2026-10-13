@@ -113,6 +113,20 @@ pub fn one_point(image: &RgbImage, params: OnePoint) -> RgbImage {
 
 impl Spec for OnePoint {
     const NAME: &'static str = "onepoint";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("hue", "the colour kept: a name, degrees or hex"),
+        ("width", "degrees either side of it that are kept whole"),
+        ("soft", "degrees over which the colour fades to grey"),
+        ("rest", "how much colour everything else keeps, 0 to 100"),
+        (
+            "at",
+            "`x,y` in percent: take the hue from this point of the picture; `none` uses `hue`",
+        ),
+        (
+            "smooth",
+            "how soft the edge of the kept zone is, in percent of the long side of the picture; a speck of another colour inside it is kept with the rest; 0 judges each pixel alone",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<OnePoint, Error> {
         let d = OnePoint::default();
@@ -186,6 +200,15 @@ pub fn tritone(image: &RgbImage, params: Tritone) -> RgbImage {
 
 impl Spec for Tritone {
     const NAME: &'static str = "tritone";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("dark", "ink of the shadows"),
+        ("mid", "ink of the mid tones"),
+        ("light", "ink of the lights"),
+        (
+            "mix",
+            "how much of the print shows over the picture, 0 to 100",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<Tritone, Error> {
         let d = Tritone::default();
@@ -419,6 +442,38 @@ pub fn false_color(image: &RgbImage, params: FalseColor) -> RgbImage {
 
 impl Spec for FalseColor {
     const NAME: &'static str = "falsecolor";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "order",
+            "where each channel comes from: `rgb`, `bgr`, `gbr`…",
+        ),
+        (
+            "invert",
+            "channels turned negative: `r`, `g`, `b`, `rb`… or `none`",
+        ),
+        ("rotate", "turn the hues by this many degrees, -180 to 180"),
+        (
+            "saturation",
+            "0 takes the colour out, 100 leaves it, 200 doubles it, up to 400",
+        ),
+        (
+            "only",
+            "move only this hue (a name, degrees or hex); `none` moves all",
+        ),
+        (
+            "width",
+            "degrees either side of `only` that are moved whole",
+        ),
+        ("soft", "degrees over which the move fades"),
+        (
+            "smooth",
+            "how soft the edge of a zone is, in percent of the long side of the picture; the zone is judged on a blurred small copy, so the edge is not a line and a speck of another colour inside it is moved with the rest; 0 judges each pixel alone",
+        ),
+        (
+            "mix",
+            "how much of the result shows over the picture, 0 to 100",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<FalseColor, Error> {
         let d = FalseColor::default();

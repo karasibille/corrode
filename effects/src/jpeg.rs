@@ -149,6 +149,20 @@ fn scan_start(jpeg: &[u8]) -> Option<usize> {
 
 impl Spec for GenerationLoss {
     const NAME: &'static str = "loss";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "generations",
+            "times the picture is saved as a JPEG and read back",
+        ),
+        (
+            "quality",
+            "JPEG quality of each generation, 1 to 100; the lower, the faster it wears",
+        ),
+        (
+            "shift",
+            "`dx,dy`: pixels the picture moves before each generation, so that the blocks do not line up",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<GenerationLoss, Error> {
         let d = GenerationLoss::default();
@@ -176,6 +190,13 @@ impl Spec for GenerationLoss {
 
 impl Spec for Databend {
     const NAME: &'static str = "bend";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "quality",
+            "JPEG quality before the bytes are bent; the lower, the larger the blocks",
+        ),
+        ("hits", "how many bytes of the file are changed"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Databend, Error> {
         let d = Databend::default();

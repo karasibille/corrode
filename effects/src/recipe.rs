@@ -39,6 +39,10 @@ use super::warp::Liquid;
 pub(super) trait Spec: Copy {
     /// The name written in a recipe.
     const NAME: &'static str;
+    /// What each parameter is, `(name, help)`, in the order they are
+    /// written. A test checks that they are the parameters written, so that
+    /// a parameter cannot be added without its help.
+    const PARAMS: &'static [(&'static str, &'static str)];
     /// The parameters from their `name=value` text, the rest at their
     /// defaults.
     fn parse(params: &mut Params) -> Result<Self, Error>;
@@ -66,6 +70,16 @@ macro_rules! effects {
                 match self {
                     $(Effect::$variant(_) => <$spec as Spec>::NAME,)*
                 }
+            }
+
+            /// The help of the parameters of the effect called `name`.
+            fn help(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+                $(
+                    if name == <$spec as Spec>::NAME {
+                        return Some(<$spec as Spec>::PARAMS);
+                    }
+                )*
+                None
             }
 
             /// Applies the effect; `seed` feeds whatever it draws at random.
@@ -126,6 +140,40 @@ effects! {
     FalseColor(FalseColor),
     Spin(Spin),
     Remap(Remap),
+}
+
+/// One parameter of an effect, as the documentation shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamInfo {
+    pub name: &'static str,
+    /// The value it has when left out, as a recipe writes it.
+    pub default: String,
+    pub help: &'static str,
+}
+
+/// The parameters of the effect called `name`, in the order a recipe
+/// writes them, with their defaults and what they do: what the README and
+/// the help of the tools are made from.
+pub fn describe(name: &str) -> Result<Vec<ParamInfo>, Error> {
+    let help = Effect::help(name).ok_or_else(|| Error::UnknownEffect(name.to_owned()))?;
+    let text = Effect::parse(name, &[], 0.0)?.to_string();
+    let defaults: Vec<(&str, &str)> = text
+        .split(' ')
+        .skip(1)
+        .filter_map(|word| word.split_once('='))
+        .collect();
+    Ok(help
+        .iter()
+        .map(|&(param, help)| ParamInfo {
+            name: param,
+            default: defaults
+                .iter()
+                .find(|(key, _)| *key == param)
+                .map(|(_, value)| (*value).to_owned())
+                .unwrap_or_default(),
+            help,
+        })
+        .collect())
 }
 
 /// Effects applied in order, with the seed of their random draws: each
@@ -357,6 +405,29 @@ mod tests {
             assert_eq!(text.parse::<Recipe>().unwrap(), recipe, "{text}");
             assert!(text.matches('=').count() >= 2, "{text}");
         }
+    }
+
+    #[test]
+    fn every_effect_documents_exactly_the_parameters_it_writes() {
+        for name in NAMES {
+            let written = name.parse::<Recipe>().unwrap().to_string();
+            let keys: Vec<&str> = written
+                .split(' ')
+                .filter_map(|word| word.split_once('=').map(|(key, _)| key))
+                .filter(|key| *key != "seed")
+                .collect();
+            let documented: Vec<&str> = describe(name).unwrap().iter().map(|p| p.name).collect();
+            assert_eq!(keys, documented, "{name}");
+            for param in describe(name).unwrap() {
+                assert!(!param.default.is_empty(), "{name}.{}", param.name);
+                assert!(
+                    param.help.len() > 8,
+                    "{name}.{} has no real help",
+                    param.name
+                );
+            }
+        }
+        assert!(matches!(describe("nothing"), Err(Error::UnknownEffect(_))));
     }
 
     #[test]

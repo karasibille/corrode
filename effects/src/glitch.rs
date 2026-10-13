@@ -184,6 +184,16 @@ pub fn channel_split(image: &RgbImage, params: ChannelSplit) -> RgbImage {
 
 impl Spec for SliceShift {
     const NAME: &'static str = "slice";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("slices", "how many slices are pushed aside"),
+        ("shift", "how far a slice can go, in pixels"),
+        ("height", "`min,max` height of a slice, in pixels"),
+        (
+            "split",
+            "push red, green and blue by different amounts, so that they come apart",
+        ),
+        ("invert", "invert the colours of one slice in three"),
+    ];
 
     fn parse(params: &mut Params) -> Result<SliceShift, Error> {
         let d = SliceShift::default();
@@ -215,6 +225,11 @@ impl Spec for SliceShift {
 
 impl Spec for PixelStretch {
     const NAME: &'static str = "stretch";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("bands", "how many lines are stretched"),
+        ("length", "`min,max` how far a line is stretched, in pixels"),
+        ("direction", "`horizontal` (rows) or `vertical` (columns)"),
+    ];
 
     fn parse(params: &mut Params) -> Result<PixelStretch, Error> {
         let d = PixelStretch::default();
@@ -242,6 +257,11 @@ impl Spec for PixelStretch {
 
 impl Spec for ChannelSplit {
     const NAME: &'static str = "split";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("red", "`dx,dy` pixels the red channel moves"),
+        ("green", "`dx,dy` pixels the green channel moves"),
+        ("blue", "`dx,dy` pixels the blue channel moves"),
+    ];
 
     fn parse(params: &mut Params) -> Result<ChannelSplit, Error> {
         let d = ChannelSplit::default();

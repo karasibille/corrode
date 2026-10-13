@@ -1,14 +1,15 @@
 #!/bin/sh
 # Remakes the pictures of this folder from photo.jpg and recipes.txt:
 #   sh docs/examples/generate.sh
-# Each line of recipes.txt is `name | recipe`; the picture is name.jpg,
+# Each line of recipes.txt is `name | title | recipe`; the picture is name.jpg,
 # made from photo.jpg then reduced to 480 pixels wide and cut to a square
 # near the top (ImageMagick), so that they line up and stay light in the
-# repository. The animation glitch-mix.gif is made with glitchgif.
+# repository. The animation glitch-mix.gif is made with glitchgif, and the
+# table of the README with the gallery example.
 set -e
 cd "$(dirname "$0")/../.."
 cargo build --release -p corrode-core --example effects
-grep -v '^#' docs/examples/recipes.txt | while IFS='|' read -r name recipe; do
+grep -v '^#' docs/examples/recipes.txt | while IFS='|' read -r name title recipe; do
     name=$(echo "$name" | tr -d ' ')
     # shellcheck disable=SC2086
     target/release/examples/effects docs/examples/photo.jpg "docs/examples/$name.jpg" seed=7 $recipe
@@ -21,3 +22,5 @@ target/release/examples/glitchgif docs/examples/photo.jpg docs/examples/glitch-m
     + aberration amount=0.003..0.012 \
     + spin angle=0..2 center=50,45 \
     + scanlines period=3 strength=25
+# The gallery of the README, with the options of each effect.
+cargo run -q -p corrode-effects --example gallery

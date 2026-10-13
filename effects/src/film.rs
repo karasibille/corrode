@@ -517,6 +517,19 @@ pub(super) fn bilinear(image: &RgbImage, x: f32, y: f32) -> [f32; 3] {
 
 impl Spec for Drag {
     const NAME: &'static str = "drag";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "kind",
+            "`motion` (along a line) or `zoom` (from the centre)",
+        ),
+        ("length", "how far the smear goes, in pixels"),
+        (
+            "angle",
+            "direction of a motion smear in degrees, 0 to the right, 90 down",
+        ),
+        ("mix", "how much of the smear shows, 0 to 100"),
+        ("blend", "`lighten`, `screen` or `normal`"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Drag, Error> {
         let d = Drag::default();
@@ -544,6 +557,10 @@ impl Spec for Drag {
 
 impl Spec for Aberration {
     const NAME: &'static str = "aberration";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[(
+        "amount",
+        "how much larger the red is drawn than the green, and the blue smaller; 0.01 is already strong",
+    )];
 
     fn parse(params: &mut Params) -> Result<Aberration, Error> {
         let d = Aberration::default();
@@ -563,6 +580,14 @@ impl Spec for Aberration {
 
 impl Spec for Grain {
     const NAME: &'static str = "grain";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("strength", "how strong the grain is, 0 to 100"),
+        ("size", "size of a grain, in pixels"),
+        (
+            "color",
+            "grain that colours the picture, or only lightens and darkens it",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<Grain, Error> {
         let d = Grain::default();
@@ -588,6 +613,15 @@ impl Spec for Grain {
 
 impl Spec for Fade {
     const NAME: &'static str = "fade";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("lift", "how far the blacks are lifted, 0 to 100"),
+        (
+            "saturation",
+            "100 leaves the colour, 0 takes it out, 200 doubles it",
+        ),
+        ("tint", "colour the picture leans towards"),
+        ("tint_amount", "how much it leans, 0 to 100"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Fade, Error> {
         let d = Fade::default();
@@ -614,6 +648,13 @@ impl Spec for Fade {
 
 impl Spec for Vignette {
     const NAME: &'static str = "vignette";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("strength", "how dark the corners get, 0 to 100"),
+        (
+            "start",
+            "where the darkening starts, 0 to 100 of the way from the centre to the corners",
+        ),
+    ];
 
     fn parse(params: &mut Params) -> Result<Vignette, Error> {
         let d = Vignette::default();
@@ -634,6 +675,11 @@ impl Spec for Vignette {
 
 impl Spec for Leak {
     const NAME: &'static str = "leak";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("color", "colour of the light"),
+        ("strength", "how strong the leak is, 0 to 100"),
+        ("size", "how far it reaches, 0 to 100 of the width"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Leak, Error> {
         let d = Leak::default();
@@ -659,6 +705,14 @@ impl Spec for Leak {
 
 impl Spec for Bloom {
     const NAME: &'static str = "bloom";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        (
+            "threshold",
+            "brightness above which a light glows, 0 to 255",
+        ),
+        ("radius", "how far the glow spreads, in pixels"),
+        ("strength", "how bright the glow is, 0 to 100"),
+    ];
 
     fn parse(params: &mut Params) -> Result<Bloom, Error> {
         let d = Bloom::default();
