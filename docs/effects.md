@@ -5,10 +5,10 @@
 The effects turn a picture into something else on purpose: the wear of a compression, the faults of a print or a screen, the colours of another film. A recipe is a few words, `seed=7 sort low=40 + slice split=true`, and the same recipe on the same picture always gives the same result. Every picture of the [gallery](../README.md#gallery) comes from [`docs/examples/photo.jpg`](examples/photo.jpg), with `seed=7` and the recipe given in its fold-out:
 
 ```sh
-cargo run --release -p corrode-core --example effects -- docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb rotate=120
+corrode effect docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb rotate=120
 ```
 
-`effects help` lists the effects and `effects help <effect>` the parameters of one, with their defaults. Sizes are in pixels for a picture 1000 pixels wide and grow with the picture, so a recipe looks the same on a preview and on the full photo. Colours are written `ff4fa3`, by name (`red`, `rouge`, `cyan`…) or as a hue (`210deg`). `sh docs/examples/generate.sh` makes these pictures again from [`recipes.txt`](examples/recipes.txt).
+`corrode effects` lists the effects and `corrode effects <effect>` tells the parameters of one, with their defaults. Sizes are in pixels for a picture 1000 pixels wide and grow with the picture, so a recipe looks the same on a preview and on the full photo. Colours are written `ff4fa3`, by name (`red`, `rouge`, `cyan`…) or as a hue (`210deg`). `sh docs/examples/generate.sh` makes these pictures again from [`recipes.txt`](examples/recipes.txt).
 
 ## What each effect does
 

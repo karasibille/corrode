@@ -1,14 +1,12 @@
-//! `corrode-preset`: applies a RawTherapee preset to a whole selection.
+//! Applies a RawTherapee preset to a whole selection.
 //!
 //! The selection is a folder of shots sorted into subfolders by look, as
-//! `corrode-select` does with `G`. The preset is a `.pp3` made on one shot.
+//! `corrode select` does with `G`. The preset is a `.pp3` made on one shot.
 //! Each group gets the preset with its own adjustments: the exposure
 //! compensation is worked out from the light of the group, and any setting
 //! can be changed by hand in a file. By default nothing is written.
 
-use std::env;
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 use corrode_core::look;
 use corrode_core::pairing;
@@ -17,81 +15,29 @@ use corrode_core::preset::{self, Adjustments, Group};
 use corrode_core::rawtherapee::Config;
 use corrode_core::similarity;
 
-const USAGE: &str =
-    "usage: corrode-preset <selection> --preset <file.pp3> [--ref <shot the preset was made on>]
-       [--adjustments <file>] [--save-adjustments <file>] [--detail] [--apply]
-
-  <selection>            folder of shots sorted into subfolders
-  --preset               the RawTherapee profile to apply, a .pp3
-  --ref                  the shot the preset was made on: the exposure of each group
-                         follows how much lighter or darker it is than this shot
-  --adjustments          settings by group, [group] then Section.Key=value lines,
-                         which win over the ones worked out
-  --save-adjustments     writes the settings chosen for each group, to edit
-  --detail               lists every setting that changes
-  --apply                writes the sidecars, after a .bak copy of each
-";
-
-struct Args {
-    selection: PathBuf,
-    preset: PathBuf,
-    reference: Option<PathBuf>,
-    adjustments: Option<PathBuf>,
-    save_adjustments: Option<PathBuf>,
-    detail: bool,
-    apply: bool,
+/// What the command is told.
+pub struct Options {
+    /// The folder of shots sorted into subfolders.
+    pub selection: PathBuf,
+    /// The RawTherapee profile to apply, a `.pp3`.
+    pub preset: PathBuf,
+    /// The shot the preset was made on: the exposure of each group
+    /// follows how much lighter or darker it is than this shot.
+    pub reference: Option<PathBuf>,
+    /// Settings by group, `[group]` then `Section.Key=value` lines, which
+    /// win over the ones worked out.
+    pub adjustments: Option<PathBuf>,
+    /// Where to write the settings chosen for each group, to edit.
+    pub save_adjustments: Option<PathBuf>,
+    /// List every setting that changes.
+    pub detail: bool,
+    /// Write the sidecars, after a `.bak` copy of each.
+    pub apply: bool,
 }
 
-fn parse() -> Result<Args, String> {
-    let (mut selection, mut preset, mut reference) = (None, None, None);
-    let (mut adjustments, mut save_adjustments) = (None, None);
-    let (mut detail, mut apply) = (false, false);
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        let mut value = |name: &str| {
-            args.next()
-                .map(PathBuf::from)
-                .ok_or_else(|| format!("{name} needs a value"))
-        };
-        match arg.as_str() {
-            "--preset" => preset = Some(value("--preset")?),
-            "--ref" => reference = Some(value("--ref")?),
-            "--adjustments" => adjustments = Some(value("--adjustments")?),
-            "--save-adjustments" => save_adjustments = Some(value("--save-adjustments")?),
-            "--detail" => detail = true,
-            "--apply" => apply = true,
-            "--help" | "-h" => return Err(USAGE.trim_end().to_owned()),
-            _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}")),
-            _ if selection.is_none() => selection = Some(PathBuf::from(arg)),
-            _ => return Err(format!("unexpected argument: {arg}")),
-        }
-    }
-    match (selection, preset) {
-        (Some(selection), Some(preset)) => Ok(Args {
-            selection,
-            preset,
-            reference,
-            adjustments,
-            save_adjustments,
-            detail,
-            apply,
-        }),
-        _ => Err(USAGE.trim_end().to_owned()),
-    }
-}
-
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("{err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn run() -> Result<(), String> {
-    let args = parse()?;
+/// Applies the preset to the groups of the selection, or shows what it
+/// would do.
+pub fn run(args: Options) -> Result<(), String> {
     let preset =
         Profile::load(&args.preset).map_err(|err| format!("{}: {err}", args.preset.display()))?;
     let groups = preset::groups(&args.selection)

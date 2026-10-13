@@ -1,29 +1,19 @@
-//! Looks for the light bands LED stage lighting leaves on photos taken
-//! with an electronic shutter, in every shot of a directory.
-//!
-//! ```sh
-//! cargo run --release -p corrode-core --example banding -- sandbox
-//! ```
+//! `corrode bands`: which shots of a directory have light bands.
 
-use std::env;
 use std::path::PathBuf;
-use std::process::ExitCode;
 use std::time::Instant;
 
 use corrode_core::{banding, pairing, picture};
 
-fn main() -> ExitCode {
-    let Some(dir) = env::args().nth(1).map(PathBuf::from) else {
-        eprintln!("usage: banding <directory>");
-        return ExitCode::FAILURE;
-    };
-    let shots = match pairing::scan_dir(&dir) {
-        Ok(shots) => shots,
-        Err(err) => {
-            eprintln!("{}: {err}", dir.display());
-            return ExitCode::FAILURE;
-        }
-    };
+#[derive(clap::Args)]
+pub struct Args {
+    /// The directory of shots
+    dir: PathBuf,
+}
+
+pub fn run(args: Args) -> Result<(), String> {
+    let shots =
+        pairing::scan_dir(&args.dir).map_err(|err| format!("{}: {err}", args.dir.display()))?;
     let mut banded = 0;
     for shot in &shots {
         let name = shot.stem.to_string_lossy();
@@ -51,5 +41,5 @@ fn main() -> ExitCode {
         }
     }
     println!("{banded} of {} shots banded", shots.len());
-    ExitCode::SUCCESS
+    Ok(())
 }

@@ -1,31 +1,24 @@
-//! Removes the light bands of RAW files, writing each as a DNG next to
-//! it (`banded-shot.RW2` → `banded-shot-deband.dng`) for RawTherapee. Files
-//! whose preview shows no bands are skipped, unless `--force` is given.
-//!
-//! ```sh
-//! cargo run --release -p corrode-core --example banding -- sandbox   # finds the banded shots
-//! cargo run --release -p corrode-core --example deband -- sandbox/banded-shot.RW2
-//! ```
+//! `corrode deband`: the light bands of RAW files removed, into DNG files.
 
-use std::env;
 use std::path::PathBuf;
-use std::process::ExitCode;
 use std::time::Instant;
 
 use corrode_core::{banding, debanding, pairing, picture};
 
-fn main() -> ExitCode {
-    let (flags, files): (Vec<String>, Vec<String>) =
-        env::args().skip(1).partition(|arg| arg.starts_with("--"));
-    let force = flags.iter().any(|flag| flag == "--force");
-    let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
-    if files.is_empty() || flags.iter().any(|flag| flag != "--force") {
-        eprintln!("usage: deband [--force] <raw file>...");
-        return ExitCode::FAILURE;
-    }
-    let mut ok = true;
-    for raw in &files {
-        if !force {
+#[derive(clap::Args)]
+pub struct Args {
+    /// Correct even the files whose preview shows no bands
+    #[arg(long)]
+    force: bool,
+    /// The RAW files; each is written as a DNG next to it (`x.RW2` gives `x-deband.dng`)
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+}
+
+pub fn run(args: Args) -> Result<(), String> {
+    let mut failed = 0;
+    for raw in &args.files {
+        if !args.force {
             let banded = pairing::shots_of(std::slice::from_ref(raw))
                 .ok()
                 .and_then(|shots| shots.into_iter().next())
@@ -61,13 +54,13 @@ fn main() -> ExitCode {
             ),
             Err(err) => {
                 println!("{}: {err}", raw.display());
-                ok = false;
+                failed += 1;
             }
         }
     }
-    if ok {
-        ExitCode::SUCCESS
+    if failed == 0 {
+        Ok(())
     } else {
-        ExitCode::FAILURE
+        Err(format!("{failed} files failed"))
     }
 }

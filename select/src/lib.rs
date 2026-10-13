@@ -1,4 +1,4 @@
-//! `corrode`: cull the shots of a directory in the terminal.
+//! Culling the shots of a directory in the terminal.
 //!
 //! Shots are shown one at a time, with a strip of the burst they belong
 //! to. Marks are written to RawTherapee sidecars as soon as they are set.
@@ -9,7 +9,6 @@ mod jobs;
 mod text;
 mod viewer;
 
-use std::env;
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -21,10 +20,8 @@ use ratatui_image::picker::Picker;
 
 use viewer::Viewer;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let dir = env::args()
-        .nth(1)
-        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+/// Culls the shots of a directory in the terminal, until the user quits.
+pub fn run(dir: PathBuf) -> Result<(), Box<dyn Error>> {
     let shots = pairing::scan_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
     if shots.is_empty() {
         return Err(format!("{}: no JPEG or RAW file", dir.display()).into());

@@ -1,14 +1,10 @@
 [package]
 name = "corrode-select"
-description = "Culling the shots of a shoot in the terminal"
+description = "Culling the shots of a shoot in the terminal (the corrode select command)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[[bin]]
-name = "corrode-select"
-path = "src/main.rs"
 
 [dependencies]
 corrode-core.workspace = true

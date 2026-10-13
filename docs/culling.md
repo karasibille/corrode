@@ -1,9 +1,9 @@
-# Culling with corrode-select
+# Culling with corrode select
 
 [Back to the README](../README.md)
 
 ```sh
-cargo run --release -p corrode-select -- path/to/shoot
+corrode select path/to/shoot
 ```
 
 corrode shows the shots of a directory one at a time, with the shot's marks and settings on top and a strip of the burst it belongs to below: shots taken less than 300 ms apart. Under each thumbnail are its marks, and ◆ points out the sharpest frame of the burst, measured around the camera's focus point. Marks are written to the RawTherapee sidecars as soon as they are set.

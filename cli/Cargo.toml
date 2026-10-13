@@ -1,0 +1,20 @@
+[package]
+name = "corrode"
+description = "corrode: cull, group and retouch photos in bulk, and glitch pictures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "corrode"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+corrode-core.workspace = true
+corrode-effects.workspace = true
+corrode-preset.workspace = true
+corrode-select.workspace = true
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg"] }
+rayon = "1"

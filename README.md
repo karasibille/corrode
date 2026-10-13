@@ -25,12 +25,12 @@ Every picture is the same photo, cropped to a square, with one effect; open `rec
 </table>
 <!-- gallery:end -->
 
-An animation mixing five effects: the colours turn from green to violet while slices of the picture are pushed aside, the red and blue edges grow, a faint spin turns round the sun and scanlines stay on top. Parameters written `a..b` go from one value to the other over the animation, and back, so that the loop does not jump (`glitchgif` makes it, `sh docs/examples/generate.sh` makes it again):
+An animation mixing five effects: the colours turn from green to violet while slices of the picture are pushed aside, the red and blue edges grow, a faint spin turns round the sun and scanlines stay on top. Parameters written `a..b` go from one value to the other over the animation, and back, so that the loop does not jump (`corrode gif` makes it, `sh docs/examples/generate.sh` makes it again):
 
 <p align="center"><img src="docs/examples/glitch-mix.gif" width="300"></p>
 
 ```sh
-cargo run --release -p corrode-core --example glitchgif -- docs/examples/photo.jpg glitch-mix.gif frames=14 fps=10 width=400 seed=11 \
+corrode gif docs/examples/photo.jpg glitch-mix.gif --frames 14 --fps 10 --width 400 seed=11 \
     falsecolor order=rgb rotate=-70..70 saturation=130 \
     + slice slices=4..10 shift=10..70 split=true \
     + aberration amount=0.003..0.012 \
@@ -50,8 +50,8 @@ cargo run --release -p corrode-core --example glitchgif -- docs/examples/photo.j
 
 ## Documentation
 
-- [Culling with `corrode-select`](docs/culling.md): the keys, the marks, the bursts, sending the kept shots to `selection/` and sorting them into groups.
-- [Presets with `corrode-preset`](docs/presets.md): one retouching applied to a whole selection, group by group.
+- [Culling with `corrode select`](docs/culling.md): the keys, the marks, the bursts, sending the kept shots to `selection/` and sorting them into groups.
+- [Presets with `corrode preset`, `corrode group`](docs/presets.md): one retouching applied to a whole selection, group by group.
 - [Effects](docs/effects.md): the recipes, what each of the 22 effects does and how to write colours and sizes.
 - [The crates and the core library](docs/library.md): how the code is divided, and the examples to try.
 
@@ -62,17 +62,16 @@ corrode runs on Linux and is built with Rust: the code uses `let` chains, so Rus
 ```sh
 git clone https://github.com/karasibille/corrode
 cd corrode
-cargo install --path select --locked    # the corrode-select program
-cargo install --path preset --locked    # the corrode-preset program
+cargo install --path cli --locked    # the corrode program
 ```
 
-The programs go to `~/.cargo/bin`, which has to be in your `PATH`. Without installing, `cargo run --release -p corrode-select -- path/to/shoot` does the same, as in the pages of the documentation. They need RawTherapee and a terminal that shows pictures; see [Requirements](#requirements).
+The `corrode` program goes to `~/.cargo/bin`, which has to be in your `PATH`. Without installing, write `cargo run --release -p corrode --` instead of `corrode` in the commands of the documentation. `corrode --help` lists the commands: `select`, `group`, `preset`, `effect`, `effects`, `gif`, `bands` and `deband`. They need RawTherapee and a terminal that shows pictures; see [Requirements](#requirements).
 
 ## Requirements
 
 - Linux, a terminal supporting the Kitty or Sixel graphics protocol (e.g. kitty)
 - [RawTherapee](https://rawtherapee.com/), configured to save `.pp3` files next to the input files
-- Optional, to make the gallery again with `docs/examples/generate.sh`: ImageMagick (`magick`). To show an effect in the terminal with `show=true`: kitty (`kitten icat`) or `chafa`
+- Optional, to make the gallery again with `docs/examples/generate.sh`: ImageMagick (`magick`). To show an effect in the terminal with `--show`: kitty (`kitten icat`) or `chafa`
 
 ## License
 

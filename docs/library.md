@@ -9,12 +9,13 @@
 | `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` sidecars and presets, picture decoding, EXIF, similarity, light bands |
 | `effects/` (`corrode-effects`) | The creative effects and their recipes; depends on `image` and `rayon` only, not on the RAW decoder |
 | `ui/` (`corrode-ui`) | What the terminal interfaces share: background jobs, terminal graphics, lines that fit |
-| `select/` (`corrode-select`) | Culling in the terminal (`ratatui` + `ratatui-image`), the `corrode-select` binary |
+| `select/` (`corrode-select`) | The culling viewer in the terminal (`ratatui` + `ratatui-image`) |
 | `preset/` (`corrode-preset`) | Applying a RawTherapee preset to a whole selection, group by group |
+| `cli/` (`corrode`) | The `corrode` program: `select`, `group`, `preset`, `effect`, `effects`, `gif`, `bands` and `deband`, one command for the other crates |
 
 ## Core library
 
-The creative effects are not here: they live in [`corrode-effects`](../effects/). The `effects` and `glitchgif` examples stay in `core/examples`, since they load a shot with the decoder.
+The creative effects are not here: they live in [`corrode-effects`](../effects/). The `corrode effect` and `corrode gif` commands load a shot with the decoder of `core` and apply the effects to it.
 
 | Module | What it does |
 |---|---|
@@ -47,10 +48,9 @@ cargo run --release -p corrode-core --example info -- sandbox              # mar
 cargo run -p corrode-core --example marks -- set --rank 4 sandbox/photo.JPG
 cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/*.JPG
 cargo run --release -p corrode-core --example bursts -- sandbox --list
-cargo run --release -p corrode-core --example similar -- sandbox --sheets sandbox/out   # groups of similar shots
 cargo run --release -p corrode-core --example sharpness -- sandbox
-cargo run --release -p corrode-core --example banding -- sandbox          # which shots have light bands
-cargo run --release -p corrode-core --example deband -- sandbox/banded-shot.RW2   # remove them, into a DNG
 ```
+
+The tools made for a shoot are subcommands of `corrode`, run the same way on `sandbox/`: `corrode bands sandbox` tells which shots have light bands, `corrode deband sandbox/banded-shot.RW2` removes them into a DNG, and `corrode group sandbox --sheets sandbox/out` groups the shots that look alike.
 
 `marks set` writes the RawTherapee sidecars of the shots it is given. `picture` saves the decoded pictures in the output directory. Use `--release` for decoding: it is much slower in debug builds.

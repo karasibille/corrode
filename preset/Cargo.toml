@@ -6,9 +6,5 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "corrode-preset"
-path = "src/main.rs"
-
 [dependencies]
 corrode-core.workspace = true
