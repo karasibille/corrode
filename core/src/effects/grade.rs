@@ -15,12 +15,12 @@ use super::sort::brightness;
 use super::units::{Percent, Point};
 
 /// 0 up to `from`, 1 from `to` on, smooth in between.
-fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
+pub(super) fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
     let t = ((x - from) / (to - from)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-fn byte(value: f32) -> u8 {
+pub(super) fn byte(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 

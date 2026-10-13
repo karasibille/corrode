@@ -13,6 +13,7 @@ mod parallel;
 mod print;
 mod random;
 mod recipe;
+mod remap;
 mod sort;
 mod spin;
 mod units;
@@ -33,6 +34,7 @@ pub use grade::{
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, Recipe};
+pub use remap::{HueMap, MAX_MOVES, Remap, remap};
 pub use sort::{Direction, PixelSort, pixel_sort};
 pub use spin::{Spin, spin};
 pub use units::{Percent, Point, REFERENCE_WIDTH, Size, scale_of};

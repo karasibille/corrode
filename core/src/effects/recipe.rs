@@ -29,6 +29,7 @@ use super::glitch::{ChannelSplit, PixelStretch, SliceShift};
 use super::grade::{FalseColor, OnePoint, Tritone};
 use super::jpeg::{Databend, GenerationLoss};
 use super::print::{Dither, Duotone, Scanlines};
+use super::remap::Remap;
 use super::sort::PixelSort;
 use super::spin::Spin;
 use super::warp::Liquid;
@@ -124,6 +125,7 @@ effects! {
     Tritone(Tritone),
     FalseColor(FalseColor),
     Spin(Spin),
+    Remap(Remap),
 }
 
 /// Effects applied in order, with the seed of their random draws: each
@@ -344,7 +346,7 @@ mod tests {
         for name in NAMES {
             assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), *name);
         }
-        assert_eq!(NAMES.len(), 21);
+        assert_eq!(NAMES.len(), 22);
     }
 
     #[test]

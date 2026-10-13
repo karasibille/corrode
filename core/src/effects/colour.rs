@@ -102,6 +102,13 @@ impl Hue {
         self.0
     }
 
+    /// How many degrees to turn from this hue to reach the other by the
+    /// shorter way round the circle: -180 up to 180, negative to go back.
+    pub fn towards(self, other: Hue) -> f32 {
+        let gap = (other.0 - self.0).rem_euclid(360.0);
+        if gap > 180.0 { gap - 360.0 } else { gap }
+    }
+
     /// How far two hues are from each other, 0 to 180 degrees, round the
     /// circle.
     pub fn distance(self, other: Hue) -> f32 {
@@ -269,6 +276,9 @@ mod tests {
         }
         assert_eq!(Hue::new(350.0).distance(Hue::new(10.0)), 20.0);
         assert_eq!(Hue::new(0.0).distance(Hue::new(180.0)), 180.0);
+        assert_eq!(Hue::new(350.0).towards(Hue::new(10.0)), 20.0);
+        assert_eq!(Hue::new(10.0).towards(Hue::new(350.0)), -20.0);
+        assert_eq!(Hue::new(90.0).towards(Hue::new(270.0)), 180.0);
         assert_eq!(Hue::new(210.0).to_string(), "210deg");
     }
 }
