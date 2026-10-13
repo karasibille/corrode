@@ -4,9 +4,11 @@ Fast JPEG+RAW photo culling in the terminal, with RawTherapee integration and gl
 
 > Status: early development. Culling, sorting a selection into groups of similar shots and applying a preset in bulk work; the effects are still a library, without an interface yet.
 
+corrode is for photographers who shoot a lot. It helps to go through hundreds of photos of a shoot and keep the good ones, puts the photos that look alike in folders, and gives a whole folder the same retouching in one go. It can also turn a photo into something else on purpose, with effects that imitate the faults of old film, compressed files and screens, as in the pictures below.
+
 ## Gallery
 
-Every picture is the same photo, cropped to a square, with one effect; open `recipe and options` under it for the recipe that made it and the parameters of the effect. What each effect does is [explained below](#effects), and `sh docs/examples/generate.sh` makes the pictures again.
+Every picture is the same photo, cropped to a square, with one effect; open `recipe and options` under it for the recipe that made it and the parameters of the effect. What each effect does is [explained in the effects page](docs/effects.md), and `sh docs/examples/generate.sh` makes the pictures again. Photo © Káranarchist (@karanarchist on Instagram).
 
 <!-- gallery:start -->
 <table width="100%">
@@ -44,162 +46,36 @@ cargo run --release -p corrode-core --example glitchgif -- docs/examples/photo.j
 - Open the matching RAW files in RawTherapee
 - Sort a selection into folders of shots that look alike (light, colour, time taken)
 - Apply a RawTherapee preset to a whole selection, adjusted for each group
-- Later: creative glitch effects, live
+- Creative effects on pictures, written as short recipes (done, as a library and examples); a live editor for them is to come
 
-## Workspace
+## Documentation
 
-| Crate | Role |
-|---|---|
-| `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` sidecars and presets, picture decoding, EXIF, similarity, light bands |
-| `effects/` (`corrode-effects`) | The creative effects and their recipes; depends on `image` and `rayon` only, not on the RAW decoder |
-| `ui/` (`corrode-ui`) | What the terminal interfaces share: background jobs, terminal graphics, lines that fit |
-| `select/` (`corrode-select`) | Culling in the terminal (`ratatui` + `ratatui-image`), the `corrode-select` binary |
-| `preset/` (`corrode-preset`) | Applying a RawTherapee preset to a whole selection, group by group |
+- [Culling with `corrode-select`](docs/culling.md): the keys, the marks, the bursts, sending the kept shots to `selection/` and sorting them into groups.
+- [Presets with `corrode-preset`](docs/presets.md): one retouching applied to a whole selection, group by group.
+- [Effects](docs/effects.md): the recipes, what each of the 22 effects does and how to write colours and sizes.
+- [The crates and the core library](docs/library.md): how the code is divided, and the examples to try.
 
-## Culling
+## Installation
 
-```sh
-cargo run --release -p corrode-select -- path/to/shoot
-```
-
-corrode shows the shots of a directory one at a time, with the shot's marks and settings on top and a strip of the burst it belongs to below: shots taken less than 300 ms apart. Under each thumbnail are its marks, and ◆ points out the sharpest frame of the burst, measured around the camera's focus point. Marks are written to the RawTherapee sidecars as soon as they are set.
-
-| Key | Action |
-|---|---|
-| ← → (h l, space, page keys) | Previous / next shot |
-| ↑ ↓ ([ ]) | Previous / next burst |
-| s | Sharpest frame of the burst |
-| k | Keep the current shot, reject the rest of the burst, go to the next burst |
-| X | Reject the whole burst, go to the next burst |
-| 1–5, 0 (or & é " ' ( à) | Rating, cleared by 0 |
-| r y g b p | Red, yellow, green, blue, purple label (again to clear) |
-| x, Delete | Reject / restore |
-| f | Filter: all, unsorted (left to cull), kept, rejected |
-| m | Move the kept shots, whole (JPEG, RAW, sidecars), to a `selection/` folder next to them, to open in RawTherapee; asks first |
-| G | Sort the shots of `selection/` into folders of shots that look alike, named after the colour of the light and the first shot (`bleu-IMG_0042`); asks first |
-| d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it, shown once written (D: even when none were found) |
-| z, Enter | 100% zoom; arrows then move around, Ctrl+arrows change shot at the same spot to compare |
-| + / - | Zoom in (200, 400, 800%) / out |
-| o / O | Open the shot / the directory in RawTherapee |
-| ? | Full help |
-| Esc, q | Leave the zoom / quit |
-
-There is nothing to save: marks are written as they are set. The line above the keys counts kept (✓), rejected (✗) and unsorted (?) shots, and says "all sorted" once nothing is left; quitting prints the same summary. Files are only read, except the sidecars that marks are written to. Directories on a spinning disk are read in the background: bursts take shape around the current shot within seconds to half a minute the first time. What the files told is kept in `~/.cache/corrode` (about 5 KB per shot), so that a directory seen before opens at once; an entry is dropped when its file changes.
-
-## Presets
-
-Sort the selection into groups first, with `G` in `corrode-select`, or without the interface:
+corrode runs on Linux and is built with Rust: the code uses `let` chains, so Rust 1.88 or later, with the 2024 edition.
 
 ```sh
-cargo run --release -p corrode-core --example similar -- selection/ --sheets /tmp/sheets   # list the groups, contact sheets to check them
-cargo run --release -p corrode-core --example similar -- selection/ --move                 # then sort the shots into folders
+git clone https://github.com/karasibille/corrode
+cd corrode
+cargo install --path select --locked    # the corrode-select program
+cargo install --path preset --locked    # the corrode-preset program
 ```
 
-Then make a preset from one shot in RawTherapee and apply it to every group:
-
-```sh
-corrode-preset selection/ --preset my-preset.pp3 --ref selection/reference-shot.RW2            # what would change
-corrode-preset selection/ --preset my-preset.pp3 --ref selection/reference-shot.RW2 --save-adjustments adjustments.txt
-corrode-preset selection/ --preset my-preset.pp3 --ref selection/reference-shot.RW2 --adjustments adjustments.txt --apply
-```
-
-Each folder is a group, and each shot left at the top level is a group of its own. Each group gets the preset with its own exposure compensation, worked out from how light or dark the group is next to the shot the preset was made on (`--ref`). Any other setting can be changed per group in a small file (`[group]`, then `Section.Key=value`). The marks, crop, rotation and white balance of each shot are kept. Nothing is written without `--apply`, and each sidecar is copied to a `.bak` first.
-
-## Effects
-
-The effects turn a picture into something else on purpose: the wear of a compression, the faults of a print or a screen, the colours of another film. A recipe is a few words, `seed=7 sort low=40 + slice split=true`, and the same recipe on the same picture always gives the same result. Every picture of the [gallery](#gallery) comes from [`docs/examples/photo.jpg`](docs/examples/photo.jpg), with `seed=7` and the recipe given in its fold-out:
-
-```sh
-cargo run --release -p corrode-core --example effects -- docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb rotate=120
-```
-
-`effects help` lists the effects and `effects help <effect>` the parameters of one, with their defaults. Sizes are in pixels for a picture 1000 pixels wide and grow with the picture, so a recipe looks the same on a preview and on the full photo. Colours are written `ff4fa3`, by name (`red`, `rouge`, `cyan`…) or as a hue (`210deg`). `sh docs/examples/generate.sh` makes these pictures again from [`recipes.txt`](docs/examples/recipes.txt).
-
-### What each effect does
-
-**Faults of digital files**: what happens to a picture when its data goes wrong.
-
-- `loss` (generation loss): the picture is saved as a JPEG over and over, moved a little each time, as a photo copied and shared a hundred times. Colours bleed and blocks appear.
-- `bend` (databending): a few bytes of the compressed file are changed on purpose, then the file is read again. Whole bands of the picture take the wrong colour.
-- `sort` (pixel sorting): runs of pixels are put in order from dark to bright, which melts the picture into streaks.
-- `slice` (slice shift): horizontal slices are pushed sideways, as on a TV that loses its signal, with their colours coming apart or inverted if asked.
-- `stretch` (pixel stretch): a pixel is smeared along its row, or its column, into a long streak.
-- `split` (channel split): the red, green and blue of the picture are moved apart, leaving coloured edges, like a badly printed picture.
-
-**Print and screens**: a picture turned into ink or light.
-
-- `dither`: the picture is reduced to black and white dots, as in a fax or a newspaper, either scattered (`diffusion`) or in a regular pattern (`bayer`).
-- `duotone`: the picture is printed with two inks, one for the shadows and one for the lights.
-- `tritone`: the same with three inks, for the shadows, the mid tones and the lights.
-- `scanlines`: dark horizontal lines over the picture, as on an old tube screen.
-
-**Film and light**: what a camera, a lens or a roll of film does by accident.
-
-- `drag`: a flash on a slow shutter. The picture stays sharp and a trail of light follows it, sideways (`motion`) or from the centre (`zoom`).
-- `aberration`: the lens does not focus all colours at the same place, so red and blue edges grow towards the corners.
-- `grain`: the speckle of fast film.
-- `fade`: the look of an old print, with the blacks lifted, the colours washed and a warm tint.
-- `vignette`: the corners get darker.
-- `leak`: a coloured glow comes in from an edge, as if light had reached the film.
-- `bloom`: the brightest lights glow, with a halo around them.
-
-**Distortion**: the picture is moved, not recoloured.
-
-- `liquid`: waves run through the picture, as if seen through moving water.
-- `spin`: the picture is smeared round a point, as if the camera had turned during the shot; with a few steps, it leaves separate ghosts.
-
-**Colour**: the colours moved on purpose.
-
-- `falsecolor`: the colours are swapped or turned round the colour wheel (red and blue swapped is the look of infrared film). It can make the colour stronger, and be limited to one range of colours so that the rest stays as it was.
-- `remap`: several colours each sent their own way at once, such as the sky towards violet and the grass towards red, without one change feeding another.
-- `onepoint` (one point colour): one colour is kept and everything else goes grey, as a yellow that stays vivid in a black and white picture.
-
-## Core library
-
-| Module | What it does |
-|---|---|
-| `pairing` | Groups the JPEG and RAW files of a directory into shots, by base name |
-| `marks` | The rating, color label and rejection culling sets on a shot |
-| `pp3` | Reads and writes a RawTherapee sidecar: the marks, any key, a whole section; every other byte is kept |
-| `rawtherapee` | Reads RawTherapee's settings, picks a shot's sidecar, creates it from the default profile, opens RawTherapee |
-| `exif` | Date to the millisecond, exposure, aperture, ISO, focal length, camera, lens and focus point, from the head of a file |
-| `picture` | Decodes a shot upright: its thumbnail, the preview embedded in the JPEG or the RAW, or the full image |
-| `formats` | What a TIFF structure, a JPEG and a RW2 file hold and where, without decoding |
-| `cameras` | What is specific to a make: the Panasonic focus point and its orientation quirk |
-| `cache` | Keeps the shooting information and thumbnails between sessions, one file per directory |
-| `bursts` | Groups shots taken in quick succession |
-| `selection` | Moves the kept shots, with their sidecars, to the shoot's `selection/` folder, then sorts them into subfolders by group |
-| `similarity` | Tells how much shots look alike (colour, layout, light, time taken), groups them and names the colour of each group's light |
-| `look` | Puts the look of a reference profile on other profiles, keeping the marks, framing and white balance of each shot |
-| `preset` | Applies a preset to the groups of a selection, with an exposure and settings of their own for each |
-| `sharpness` | Scores the sharpness of a picture around its focus point |
-| `banding` | Detects the light bands LED lighting leaves with an electronic shutter |
-| `debanding` | Removes those bands from the raw sensor data, per color, by their period |
-| `dng` | Writes a raw image as a DNG with the original's metadata and preview |
-
-### Trying it
-
-The examples work on a directory of photos. Copy a few shots to `sandbox/`, which git ignores, rather than working on the originals:
-
-```sh
-cargo run -p corrode-core --example scan -- sandbox --list                 # how files are paired
-cargo run --release -p corrode-core --example info -- sandbox              # marks and shooting information
-cargo run -p corrode-core --example marks -- set --rank 4 sandbox/photo.JPG
-cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/*.JPG
-cargo run --release -p corrode-core --example bursts -- sandbox --list
-cargo run --release -p corrode-core --example similar -- sandbox --sheets sandbox/out   # groups of similar shots
-cargo run --release -p corrode-core --example sharpness -- sandbox
-cargo run --release -p corrode-core --example banding -- sandbox          # which shots have light bands
-cargo run --release -p corrode-core --example deband -- sandbox/banded-shot.RW2   # remove them, into a DNG
-```
-
-`marks set` writes the RawTherapee sidecars of the shots it is given. `picture` saves the decoded pictures in the output directory. Use `--release` for decoding: it is much slower in debug builds.
+The programs go to `~/.cargo/bin`, which has to be in your `PATH`. Without installing, `cargo run --release -p corrode-select -- path/to/shoot` does the same, as in the pages of the documentation. They need RawTherapee and a terminal that shows pictures; see [Requirements](#requirements).
 
 ## Requirements
 
 - Linux, a terminal supporting the Kitty or Sixel graphics protocol (e.g. kitty)
 - [RawTherapee](https://rawtherapee.com/), configured to save `.pp3` files next to the input files
+- Optional, to make the gallery again with `docs/examples/generate.sh`: ImageMagick (`magick`). To show an effect in the terminal with `show=true`: kitty (`kitten icat`) or `chafa`
 
 ## License
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
+
+The sample photo `docs/examples/photo.jpg` and the pictures made from it are © Káranarchist (@karanarchist on Instagram), and are not part of that licence.
