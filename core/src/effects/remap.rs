@@ -9,6 +9,7 @@ use image::RgbImage;
 use super::Error;
 use super::colour::{Hue, from_hsv, to_hsv};
 use super::grade::{byte, smoothstep};
+use super::mask::SoftMap;
 use super::parallel;
 use super::recipe::{Params, Spec};
 use super::units::Percent;
@@ -72,6 +73,12 @@ pub struct Remap {
     /// and over how many more degrees the move fades out.
     pub width: u16,
     pub soft: u16,
+    /// How soft the edge of a zone is, as a percent of the long side of
+    /// the picture: the zones are worked out on a small copy and blurred
+    /// by this much, so that an edge is not a line and a speck of another
+    /// colour inside a zone is moved with the rest. 0 judges every pixel
+    /// by itself.
+    pub smooth: f32,
     /// How much colour the moved ones get, in percent: 100 leaves it.
     pub saturation: u16,
     /// How much of the result shows over the picture, 0 to 100.
@@ -84,6 +91,7 @@ impl Default for Remap {
             map: HueMap::default(),
             width: 25,
             soft: 25,
+            smooth: 1.0,
             saturation: 100,
             mix: Percent::new(100),
         }
@@ -107,19 +115,35 @@ pub fn remap(image: &RgbImage, params: Remap) -> RgbImage {
     let (width, soft) = (f32::from(params.width), f32::from(params.soft).max(1.0));
     let saturation = f32::from(params.saturation) / 100.0;
     let mix = params.mix.fraction();
-    parallel::for_each_pixel(&mut result, |_, _, pixel| {
-        let original = pixel.0.map(f32::from);
-        let [hue, strength, value] = to_hsv(original.map(|c| c / 255.0));
+    // For a colour: how near it is to the hues, summed, and that nearness
+    // times the turn each asks for; greys, which have no hue, count for
+    // nothing.
+    let pull = |rgb: [f32; 3]| {
+        let [hue, strength, _] = to_hsv(rgb.map(|c| c / 255.0));
+        let gate = smoothstep(0.02, 0.06, strength);
         let (mut near, mut turn) = (0.0f32, 0.0f32);
         for (from, gap) in &moves {
             let here = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(*from));
             near += here;
             turn += here * gap;
         }
-        let amount = near.min(1.0) * smoothstep(0.02, 0.06, strength) * mix;
-        if amount <= 0.0 {
+        [near * gate, turn * gate]
+    };
+    // The pull is judged on a blurred small copy, not pixel by pixel; the
+    // turn is averaged by how near each hue is, so that a blur does not
+    // mix a zone sent one way with a zone sent the other.
+    let zones = (params.smooth > 0.0).then(|| SoftMap::build(image, params.smooth, pull));
+    parallel::for_each_pixel(&mut result, |x, y, pixel| {
+        let original = pixel.0.map(f32::from);
+        let [near, turn] = match &zones {
+            Some(zones) => zones.at(x, y),
+            None => pull(original),
+        };
+        let amount = near.min(1.0) * mix;
+        if amount <= 1e-4 || near <= 1e-4 {
             return;
         }
+        let [hue, strength, value] = to_hsv(original.map(|c| c / 255.0));
         let moved = from_hsv([hue + turn / near, (strength * saturation).min(1.0), value])
             .map(|c| c * 255.0);
         for channel in 0..3 {
@@ -139,6 +163,7 @@ impl Spec for Remap {
             map: params.get("map", d.map)?,
             width: params.get("width", d.width)?,
             soft: params.get("soft", d.soft)?,
+            smooth: params.get::<f32>("smooth", d.smooth)?.clamp(0.0, 10.0),
             saturation: params.get::<u16>("saturation", d.saturation)?.min(400),
             mix: params.get("mix", d.mix)?,
         })
@@ -147,8 +172,8 @@ impl Spec for Remap {
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " map={} width={} soft={} saturation={} mix={}",
-            self.map, self.width, self.soft, self.saturation, self.mix
+            " map={} width={} soft={} smooth={} saturation={} mix={}",
+            self.map, self.width, self.soft, self.smooth, self.saturation, self.mix
         )
     }
 
@@ -220,6 +245,44 @@ mod tests {
         assert!(sky.distance(Hue::new(120.0)) < 15.0, "{sky}");
         let grass = hue_of(*moved.get_pixel(7, 0));
         assert!(grass.distance(Hue::new(0.0)) < 15.0, "{grass}");
+    }
+
+    #[test]
+    fn smoothing_softens_an_edge_and_takes_a_speck_with_its_zone() {
+        // Blue left, green right, with a green speck in the blue.
+        let mut image = RgbImage::from_fn(300, 100, |x, _| {
+            Rgb(if x < 150 {
+                [60, 100, 220]
+            } else {
+                [70, 190, 50]
+            })
+        });
+        for (x, y) in [(70, 50), (71, 50), (70, 51), (71, 51)] {
+            image.put_pixel(x, y, Rgb([70, 190, 50]));
+        }
+        let moves = |smooth: f32| Remap {
+            map: map("220deg:280deg"),
+            smooth,
+            ..Remap::default()
+        };
+        let sharp = remap(&image, moves(0.0));
+        let soft = remap(&image, moves(3.0));
+        // The green speck stays green when judged alone, and turns with the
+        // sky when smoothed.
+        assert_eq!(sharp.get_pixel(70, 50), image.get_pixel(70, 50));
+        assert_ne!(soft.get_pixel(70, 50), image.get_pixel(70, 50));
+        // The green zone is left alone, far from the edge.
+        assert_eq!(soft.get_pixel(290, 50), image.get_pixel(290, 50));
+        // At the edge the move fades instead of stopping at a line: the
+        // pixels just left of it are less moved than far from it.
+        let moved =
+            |x: u32| i32::from(soft.get_pixel(x, 50).0[0]) - i32::from(image.get_pixel(x, 50).0[0]);
+        assert!(
+            moved(145).abs() < moved(20).abs(),
+            "{} {}",
+            moved(145),
+            moved(20)
+        );
     }
 
     #[test]

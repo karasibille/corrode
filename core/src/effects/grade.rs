@@ -9,6 +9,7 @@ use image::{Rgb, RgbImage};
 
 use super::Error;
 use super::colour::{Color, Hue, from_hsv, to_hsv};
+use super::mask::SoftMap;
 use super::parallel;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;
@@ -39,6 +40,11 @@ pub struct OnePoint {
     /// A point of the picture whose hue is the one kept, instead of
     /// `hue`; it is also used when the point itself is grey.
     pub at: Point,
+    /// How soft the edge of the kept zone is, as a percent of the long
+    /// side of the picture: the zone is judged on a blurred small copy,
+    /// so that its edge is not a line and a speck of another colour
+    /// inside it is kept with the rest. 0 judges every pixel by itself.
+    pub smooth: f32,
 }
 
 impl Default for OnePoint {
@@ -49,6 +55,7 @@ impl Default for OnePoint {
             soft: 30,
             rest: Percent::new(0),
             at: Point::default(),
+            smooth: 1.0,
         }
     }
 }
@@ -87,14 +94,25 @@ pub fn one_point(image: &RgbImage, params: OnePoint) -> RgbImage {
     let width = f32::from(params.width);
     let soft = f32::from(params.soft).max(1.0);
     let rest = params.rest.fraction();
-    let mut result = image.clone();
-    parallel::for_each_pixel(&mut result, |_, _, pixel| {
-        let rgb = pixel.0.map(f32::from);
+    // How much of its colour a colour keeps, by its hue: all of it near the
+    // hue kept, fading away from it, and none for a grey, whose hue means
+    // nothing.
+    let kept_of = |rgb: [f32; 3]| {
         let [hue, saturation, _] = to_hsv(rgb.map(|channel| channel / 255.0));
-        let grey = f32::from(brightness(*pixel));
         let near = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(target));
-        // The hue of a near-grey pixel means nothing: it goes grey too.
-        let kept = near * smoothstep(0.04, 0.12, saturation);
+        near * smoothstep(0.04, 0.12, saturation)
+    };
+    // The zone is judged on a blurred small copy, not pixel by pixel.
+    let zone = (params.smooth > 0.0)
+        .then(|| SoftMap::build(image, params.smooth, |rgb| [kept_of(rgb), 0.0]));
+    let mut result = image.clone();
+    parallel::for_each_pixel(&mut result, |x, y, pixel| {
+        let rgb = pixel.0.map(f32::from);
+        let grey = f32::from(brightness(*pixel));
+        let kept = match &zone {
+            Some(zone) => zone.at(x, y)[0],
+            None => kept_of(rgb),
+        };
         for channel in 0..3 {
             let faded = grey + (rgb[channel] - grey) * rest;
             pixel[channel] = byte(faded + (rgb[channel] - faded) * kept);
@@ -114,14 +132,15 @@ impl Spec for OnePoint {
             soft: params.get("soft", d.soft)?,
             rest: params.get("rest", d.rest)?,
             at: params.get("at", d.at)?,
+            smooth: params.get::<f32>("smooth", d.smooth)?.clamp(0.0, 10.0),
         })
     }
 
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " hue={} width={} soft={} rest={} at={}",
-            self.hue, self.width, self.soft, self.rest, self.at
+            " hue={} width={} soft={} rest={} at={} smooth={}",
+            self.hue, self.width, self.soft, self.rest, self.at, self.smooth
         )
     }
 
@@ -334,6 +353,12 @@ pub struct FalseColor {
     /// whole, and over how many more degrees the move fades out.
     pub width: u16,
     pub soft: u16,
+    /// How soft the edge of the range is, as a percent of the long side
+    /// of the picture: the zone of a hue is worked out on a small copy
+    /// and blurred by this much, so that its edge is not a line and a
+    /// speck of another colour inside it is moved with the rest. 0 judges
+    /// every pixel by itself.
+    pub smooth: f32,
     /// How much of the result shows over the picture, 0 to 100.
     pub mix: Percent,
 }
@@ -348,6 +373,7 @@ impl Default for FalseColor {
             only: MaybeHue::default(),
             width: 30,
             soft: 30,
+            smooth: 1.0,
             mix: Percent::new(100),
         }
     }
@@ -361,18 +387,27 @@ pub fn false_color(image: &RgbImage, params: FalseColor) -> RgbImage {
     let rotate = f32::from(params.rotate);
     let saturation = f32::from(params.saturation) / 100.0;
     let (width, soft) = (f32::from(params.width), f32::from(params.soft).max(1.0));
+    // How much of the move a colour gets, by its hue: whole near the hue
+    // asked for, fading away from it, and none for a grey, which has no
+    // hue to be near.
+    let share_of = |only: Hue, rgb: [f32; 3]| {
+        let [hue, strength, _] = to_hsv(rgb.map(|c| c / 255.0));
+        let near = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(only));
+        near * smoothstep(0.02, 0.06, strength)
+    };
+    // The share is judged on a blurred small copy, not pixel by pixel.
+    let zone = params
+        .only
+        .0
+        .filter(|_| params.smooth > 0.0)
+        .map(|only| SoftMap::build(image, params.smooth, |rgb| [share_of(only, rgb), 0.0]));
     let mut result = image.clone();
-    parallel::for_each_pixel(&mut result, |_, _, pixel| {
+    parallel::for_each_pixel(&mut result, |x, y, pixel| {
         let original = pixel.0.map(f32::from);
-        // How much of the move this pixel gets, by its own hue.
-        let share = match params.only.0 {
-            None => 1.0,
-            Some(only) => {
-                let [hue, strength, _] = to_hsv(original.map(|c| c / 255.0));
-                let near = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(only));
-                // A grey has no hue to be near: it stays as it is.
-                near * smoothstep(0.02, 0.06, strength)
-            }
+        let share = match (params.only.0, &zone) {
+            (None, _) => 1.0,
+            (Some(_), Some(zone)) => zone.at(x, y)[0],
+            (Some(only), None) => share_of(only, original),
         };
         let mix = mix * share;
         let mut moved = [0.0f32; 3];
@@ -410,6 +445,7 @@ impl Spec for FalseColor {
             only: params.get("only", d.only)?,
             width: params.get("width", d.width)?,
             soft: params.get("soft", d.soft)?,
+            smooth: params.get::<f32>("smooth", d.smooth)?.clamp(0.0, 10.0),
             mix: params.get("mix", d.mix)?,
         })
     }
@@ -417,7 +453,7 @@ impl Spec for FalseColor {
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " order={} invert={} rotate={} saturation={} only={} width={} soft={} mix={}",
+            " order={} invert={} rotate={} saturation={} only={} width={} soft={} smooth={} mix={}",
             self.order,
             self.invert,
             self.rotate,
@@ -425,6 +461,7 @@ impl Spec for FalseColor {
             self.only,
             self.width,
             self.soft,
+            self.smooth,
             self.mix
         )
     }
@@ -458,6 +495,27 @@ mod tests {
             r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1,
             "blue goes grey: {r} {g} {b}"
         );
+    }
+
+    #[test]
+    fn a_speck_inside_the_kept_zone_is_kept_with_it_when_smoothed() {
+        // A red zone with a small blue speck: alone, the speck goes grey;
+        // smoothed, it is kept with the zone it is in.
+        let mut image = RgbImage::from_pixel(300, 300, Rgb([220, 30, 30]));
+        for (x, y) in [(150, 150), (151, 150), (150, 151), (151, 151)] {
+            image.put_pixel(x, y, Rgb([30, 30, 220]));
+        }
+        let keep = |smooth: f32| OnePoint {
+            smooth,
+            ..OnePoint::default()
+        };
+        let sharp = one_point(&image, keep(0.0));
+        let soft = one_point(&image, keep(3.0));
+        assert_ne!(sharp.get_pixel(150, 150), image.get_pixel(150, 150));
+        let [r, _, b] = soft.get_pixel(150, 150).0;
+        assert!(b > 200 && r < 40, "kept as blue: {r} {b}");
+        // The zone itself is kept either way.
+        assert_eq!(soft.get_pixel(10, 10), image.get_pixel(10, 10));
     }
 
     #[test]
@@ -654,6 +712,30 @@ mod tests {
             },
         );
         assert_ne!(all.get_pixel(7, 0), image.get_pixel(7, 0));
+    }
+
+    #[test]
+    fn a_speck_inside_the_range_is_moved_with_the_zone_when_smoothed() {
+        // A blue sky with a small red speck in the middle.
+        let mut sky = RgbImage::from_pixel(300, 300, Rgb([90, 120, 200]));
+        for (x, y) in [(150, 150), (151, 150), (150, 151), (151, 151)] {
+            sky.put_pixel(x, y, Rgb([220, 30, 30]));
+        }
+        let turn = |smooth: f32| FalseColor {
+            order: "rgb".parse().unwrap(),
+            rotate: 90,
+            only: "blue".parse().unwrap(),
+            smooth,
+            ..FalseColor::default()
+        };
+        // Without smoothing the speck is its own colour, out of range, and
+        // stays red; smoothed, it is taken for sky and its hue turns too.
+        let sharp = false_color(&sky, turn(0.0));
+        let soft = false_color(&sky, turn(3.0));
+        assert_eq!(sharp.get_pixel(150, 150), sky.get_pixel(150, 150));
+        assert_ne!(soft.get_pixel(150, 150), sky.get_pixel(150, 150));
+        // A whole zone is turned the same either way.
+        assert_eq!(soft.get_pixel(10, 10), sharp.get_pixel(10, 10));
     }
 
     #[test]

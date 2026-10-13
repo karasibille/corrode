@@ -9,6 +9,7 @@ mod film;
 mod glitch;
 mod grade;
 mod jpeg;
+mod mask;
 mod parallel;
 mod print;
 mod random;
