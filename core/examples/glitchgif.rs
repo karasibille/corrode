@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Instant;
 
-use corrode_core::effects::{NAMES, Recipe};
 use corrode_core::{pairing, picture};
+use corrode_effects::{NAMES, Recipe};
 use image::codecs::gif::{GifEncoder, Repeat};
 use image::imageops::FilterType;
 use image::{Delay, DynamicImage, Frame};

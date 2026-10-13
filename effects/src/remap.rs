@@ -187,7 +187,7 @@ mod tests {
     use image::Rgb;
 
     use super::*;
-    use crate::effects::Color;
+    use crate::Color;
 
     fn map(text: &str) -> HueMap {
         text.parse().unwrap()

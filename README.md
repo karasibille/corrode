@@ -48,7 +48,8 @@ cargo run --release -p corrode-core --example glitchgif -- docs/examples/photo.j
 
 | Crate | Role |
 |---|---|
-| `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` marks, picture decoding, EXIF, light bands, effects |
+| `core/` (`corrode-core`) | JPEG↔RAW pairing, `.pp3` sidecars and presets, picture decoding, EXIF, similarity, light bands |
+| `effects/` (`corrode-effects`) | The creative effects and their recipes; depends on `image` and `rayon` only, not on the RAW decoder |
 | `ui/` (`corrode-ui`) | What the terminal interfaces share: background jobs, terminal graphics, lines that fit |
 | `select/` (`corrode-select`) | Culling in the terminal (`ratatui` + `ratatui-image`), the `corrode-select` binary |
 | `preset/` (`corrode-preset`) | Applying a RawTherapee preset to a whole selection, group by group |

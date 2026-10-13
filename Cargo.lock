@@ -335,12 +335,22 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "corrode-core"
 version = "0.1.0"
 dependencies = [
+ "corrode-effects",
  "image",
  "postcard",
  "rawler",
  "rayon",
  "serde",
  "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "corrode-effects"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "rayon",
  "thiserror 2.0.21",
 ]
 

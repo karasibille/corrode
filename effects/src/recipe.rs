@@ -318,7 +318,7 @@ mod tests {
     use image::Rgb;
 
     use super::*;
-    use crate::effects::Size;
+    use crate::Size;
 
     #[test]
     fn a_recipe_reads_and_prints_the_same() {
