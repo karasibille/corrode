@@ -14,12 +14,7 @@ use super::parallel;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;
 use super::units::{Percent, Point};
-
-/// 0 up to `from`, 1 from `to` on, smooth in between.
-pub(super) fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
-    let t = ((x - from) / (to - from)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
+use super::zone::HueZone;
 
 pub(super) fn byte(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
@@ -91,17 +86,12 @@ pub fn one_point(image: &RgbImage, params: OnePoint) -> RgbImage {
         .0
         .and_then(|(x, y)| hue_at(image, x, y))
         .unwrap_or(params.hue);
-    let width = f32::from(params.width);
-    let soft = f32::from(params.soft).max(1.0);
     let rest = params.rest.fraction();
     // How much of its colour a colour keeps, by its hue: all of it near the
     // hue kept, fading away from it, and none for a grey, whose hue means
     // nothing.
-    let kept_of = |rgb: [f32; 3]| {
-        let [hue, saturation, _] = to_hsv(rgb.map(|channel| channel / 255.0));
-        let near = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(target));
-        near * smoothstep(0.04, 0.12, saturation)
-    };
+    let kept_zone = HueZone::new(target, params.width, params.soft);
+    let kept_of = |rgb: [f32; 3]| kept_zone.weight(rgb);
     // The zone is judged on a blurred small copy, not pixel by pixel.
     let zone = (params.smooth > 0.0)
         .then(|| SoftMap::build(image, params.smooth, |rgb| [kept_of(rgb), 0.0]));
@@ -386,15 +376,11 @@ pub fn false_color(image: &RgbImage, params: FalseColor) -> RgbImage {
     let mix = params.mix.fraction();
     let rotate = f32::from(params.rotate);
     let saturation = f32::from(params.saturation) / 100.0;
-    let (width, soft) = (f32::from(params.width), f32::from(params.soft).max(1.0));
     // How much of the move a colour gets, by its hue: whole near the hue
     // asked for, fading away from it, and none for a grey, which has no
     // hue to be near.
-    let share_of = |only: Hue, rgb: [f32; 3]| {
-        let [hue, strength, _] = to_hsv(rgb.map(|c| c / 255.0));
-        let near = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(only));
-        near * smoothstep(0.02, 0.06, strength)
-    };
+    let share_of =
+        |only: Hue, rgb: [f32; 3]| HueZone::new(only, params.width, params.soft).weight(rgb);
     // The share is judged on a blurred small copy, not pixel by pixel.
     let zone = params
         .only

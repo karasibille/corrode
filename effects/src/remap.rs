@@ -8,11 +8,12 @@ use image::RgbImage;
 
 use super::Error;
 use super::colour::{Hue, from_hsv, to_hsv};
-use super::grade::{byte, smoothstep};
+use super::grade::byte;
 use super::mask::SoftMap;
 use super::parallel;
 use super::recipe::{Params, Spec};
 use super::units::Percent;
+use super::zone::{HueZone, colourfulness};
 
 /// How many hues can be moved in one effect.
 pub const MAX_MOVES: usize = 8;
@@ -103,16 +104,20 @@ impl Default for Remap {
 /// hues overlap their moves are averaged, by how near each is. Greys have
 /// no hue and stay as they are.
 pub fn remap(image: &RgbImage, params: Remap) -> RgbImage {
-    let moves: Vec<(Hue, f32)> = params
+    let moves: Vec<(HueZone, f32)> = params
         .map
         .pairs()
-        .map(|(from, to)| (from, from.towards(to)))
+        .map(|(from, to)| {
+            (
+                HueZone::new(from, params.width, params.soft),
+                from.towards(to),
+            )
+        })
         .collect();
     let mut result = image.clone();
     if moves.is_empty() {
         return result;
     }
-    let (width, soft) = (f32::from(params.width), f32::from(params.soft).max(1.0));
     let saturation = f32::from(params.saturation) / 100.0;
     let mix = params.mix.fraction();
     // For a colour: how near it is to the hues, summed, and that nearness
@@ -120,10 +125,10 @@ pub fn remap(image: &RgbImage, params: Remap) -> RgbImage {
     // nothing.
     let pull = |rgb: [f32; 3]| {
         let [hue, strength, _] = to_hsv(rgb.map(|c| c / 255.0));
-        let gate = smoothstep(0.02, 0.06, strength);
+        let gate = colourfulness(strength);
         let (mut near, mut turn) = (0.0f32, 0.0f32);
-        for (from, gap) in &moves {
-            let here = 1.0 - smoothstep(width, width + soft, Hue::new(hue).distance(*from));
+        for (zone, gap) in &moves {
+            let here = zone.nearness(Hue::new(hue));
             near += here;
             turn += here * gap;
         }

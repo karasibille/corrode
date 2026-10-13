@@ -19,6 +19,7 @@ mod sort;
 mod spin;
 mod units;
 mod warp;
+mod zone;
 
 pub use colour::{Color, Hue};
 pub use film::{
