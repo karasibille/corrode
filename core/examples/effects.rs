@@ -9,7 +9,8 @@
 //! sorting), slice (slice shift), stretch (pixel stretch), split (channel
 //! split), dither, duotone, scanlines, drag, aberration, grain, fade,
 //! vignette, leak, bloom, liquid; `name=value` sets a parameter,
-//! the rest take their defaults. `show=true` before the recipe shows
+//! the rest take their defaults. Colours are written `ff4fa3`, by name
+//! (`pink`, `rose`, `cyan`…) or as a hue (`210deg`). `show=true` before the recipe shows
 //! the result in the terminal once saved (kitty, else chafa).
 //! The picture is the shot's full-size image (JPEG, else developed RAW).
 //! Use `--release`: effects go through the whole picture many times.

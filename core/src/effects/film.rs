@@ -12,8 +12,8 @@ use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
 use super::Error;
+use super::colour::Color;
 use super::parallel;
-use super::print::Color;
 use super::random::Random;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;

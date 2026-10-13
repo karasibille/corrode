@@ -4,6 +4,7 @@
 //! one seed for whatever they draw at random, so that a result can be
 //! made again from its text.
 
+mod colour;
 mod film;
 mod glitch;
 mod jpeg;
@@ -15,6 +16,7 @@ mod sort;
 mod units;
 mod warp;
 
+pub use colour::{Color, Hue};
 pub use film::{
     Aberration, Blend, Bloom, Drag, DragKind, Fade, Grain, Leak, Vignette, aberration, bloom, drag,
     fade, grain, leak, vignette,
@@ -23,7 +25,7 @@ pub use glitch::{
     ChannelSplit, PixelStretch, SliceShift, channel_split, pixel_stretch, slice_shift,
 };
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
-pub use print::{Color, Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
+pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use recipe::{Effect, NAMES, Recipe};
 pub use sort::{Direction, PixelSort, pixel_sort};
 pub use units::{Percent, REFERENCE_WIDTH, Size, scale_of};

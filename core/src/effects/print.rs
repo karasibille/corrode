@@ -10,34 +10,11 @@ use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
 use super::Error;
+use super::colour::Color;
 use super::parallel;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;
 use super::units::{Percent, Size};
-
-/// A colour written `rrggbb`, as on the web.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Color(pub Rgb<u8>);
-
-impl std::str::FromStr for Color {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Color, String> {
-        let hex = text.strip_prefix('#').unwrap_or(text);
-        let channel = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
-        match (hex.len(), channel(0), channel(2), channel(4)) {
-            (6, Some(r), Some(g), Some(b)) => Ok(Color(Rgb([r, g, b]))),
-            _ => Err(format!("'{text}' is not a colour (rrggbb)")),
-        }
-    }
-}
-
-impl std::fmt::Display for Color {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let [r, g, b] = self.0.0;
-        write!(f, "{r:02x}{g:02x}{b:02x}")
-    }
-}
 
 /// How a picture is reduced to black and white dots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
