@@ -43,7 +43,7 @@ corrode shows the shots of a directory one at a time, with the shot's marks and 
 | x, Delete | Reject / restore |
 | f | Filter: all, unsorted (left to cull), kept, rejected |
 | m | Move the kept shots, whole (JPEG, RAW, sidecars), to a `selection/` folder next to them, to open in RawTherapee; asks first |
-| G | Sort the shots of `selection/` into folders of shots that look alike, named after the colour of the light and the first shot (`bleu-_1117041`); asks first |
+| G | Sort the shots of `selection/` into folders of shots that look alike, named after the colour of the light and the first shot (`bleu-IMG_0042`); asks first |
 | d / D | Remove the light bands of the RAW into `<name>-deband.dng` next to it, shown once written (D: even when none were found) |
 | z, Enter | 100% zoom; arrows then move around, Ctrl+arrows change shot at the same spot to compare |
 | + / - | Zoom in (200, 400, 800%) / out |
@@ -65,9 +65,9 @@ cargo run --release -p corrode-core --example similar -- selection/ --move      
 Then make a preset from one shot in RawTherapee and apply it to every group:
 
 ```sh
-corrode-preset selection/ --preset my-preset.pp3 --ref _1139372            # what would change
-corrode-preset selection/ --preset my-preset.pp3 --ref _1139372 --save-adjustments adjustments.txt
-corrode-preset selection/ --preset my-preset.pp3 --ref _1139372 --adjustments adjustments.txt --apply
+corrode-preset selection/ --preset my-preset.pp3 --ref selection/reference-shot.RW2            # what would change
+corrode-preset selection/ --preset my-preset.pp3 --ref selection/reference-shot.RW2 --save-adjustments adjustments.txt
+corrode-preset selection/ --preset my-preset.pp3 --ref selection/reference-shot.RW2 --adjustments adjustments.txt --apply
 ```
 
 Each folder is a group, and each shot left at the top level is a group of its own. Each group gets the preset with its own exposure compensation, worked out from how light or dark the group is next to the shot the preset was made on (`--ref`). Any other setting can be changed per group in a small file (`[group]`, then `Section.Key=value`). The marks, crop, rotation and white balance of each shot are kept. Nothing is written without `--apply`, and each sidecar is copied to a `.bak` first.
@@ -102,12 +102,13 @@ The examples work on a directory of photos. Copy a few shots to `sandbox/`, whic
 ```sh
 cargo run -p corrode-core --example scan -- sandbox --list                 # how files are paired
 cargo run --release -p corrode-core --example info -- sandbox              # marks and shooting information
-cargo run -p corrode-core --example marks -- set --rank 4 sandbox/P1011259.JPG
+cargo run -p corrode-core --example marks -- set --rank 4 sandbox/photo.JPG
 cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/*.JPG
 cargo run --release -p corrode-core --example bursts -- sandbox --list
 cargo run --release -p corrode-core --example similar -- sandbox --sheets sandbox/out   # groups of similar shots
 cargo run --release -p corrode-core --example sharpness -- sandbox
-cargo run --release -p corrode-core --example deband -- sandbox/banding/109/_1094086.RW2
+cargo run --release -p corrode-core --example banding -- sandbox          # which shots have light bands
+cargo run --release -p corrode-core --example deband -- sandbox/banded-shot.RW2   # remove them, into a DNG
 ```
 
 `marks set` writes the RawTherapee sidecars of the shots it is given. `picture` saves the decoded pictures in the output directory. Use `--release` for decoding: it is much slower in debug builds.

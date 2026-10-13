@@ -2,7 +2,7 @@
 //! as JPEG, printing the recipe in full so that it can be made again.
 //!
 //! ```sh
-//! cargo run --release -p corrode-core --example effects -- sandbox/P1011259.JPG sandbox/out/x.jpg seed=7 sort low=40 high=220 + slice slices=12 split=true
+//! cargo run --release -p corrode-core --example effects -- sandbox/photo.JPG sandbox/out/x.jpg seed=7 sort low=40 high=220 + slice slices=12 split=true
 //! ```
 //!
 //! Effects: loss (generation loss), bend (databending), sort (pixel

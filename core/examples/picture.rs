@@ -2,7 +2,7 @@
 //! they come from and how long they took, and saves them as JPEG.
 //!
 //! ```sh
-//! cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/P1011259.JPG sandbox/_1023948.RW2
+//! cargo run --release -p corrode-core --example picture -- sandbox/out sandbox/photo.JPG sandbox/shot.RW2
 //! ```
 //!
 //! Each image stands for its shot, so passing the RAW of a pair still

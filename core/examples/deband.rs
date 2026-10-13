@@ -1,9 +1,10 @@
 //! Removes the light bands of RAW files, writing each as a DNG next to
-//! it (`_1094086.RW2` → `_1094086-deband.dng`) for RawTherapee. Files
+//! it (`banded-shot.RW2` → `banded-shot-deband.dng`) for RawTherapee. Files
 //! whose preview shows no bands are skipped, unless `--force` is given.
 //!
 //! ```sh
-//! cargo run --release -p corrode-core --example deband -- sandbox/banding/109/_1094086.RW2
+//! cargo run --release -p corrode-core --example banding -- sandbox   # finds the banded shots
+//! cargo run --release -p corrode-core --example deband -- sandbox/banded-shot.RW2
 //! ```
 
 use std::env;

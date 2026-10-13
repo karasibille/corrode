@@ -86,7 +86,7 @@ impl Viewer {
         key(
             &mut lines,
             "G",
-            "sort the shots of selection/, whenever they were sent, into folders of shots that look alike (colour of the light, layout, time taken), named after the colour and the first shot, bleu-_1117041; shots alone stay; asks first, G again confirms.",
+            "sort the shots of selection/, whenever they were sent, into folders of shots that look alike (colour of the light, layout, time taken), named after the colour and the first shot, bleu-IMG_0042; shots alone stay; asks first, G again confirms.",
         );
 
         section(&mut lines, "Filters");

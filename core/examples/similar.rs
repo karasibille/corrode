@@ -2,12 +2,12 @@
 //! subfolders. By default nothing is moved: the groups are listed, and a
 //! contact sheet of each can be written to check them by eye. With
 //! `--move`, each group of two shots or more goes to its own subfolder
-//! (`bleu-_1117041`…), with the RAW, the JPEG and the sidecars; shots alone stay.
+//! (`bleu-IMG_0042`…), with the RAW, the JPEG and the sidecars; shots alone stay.
 //!
 //! ```sh
 //! cargo run --release -p corrode-core --example similar -- sandbox/selection
 //! cargo run --release -p corrode-core --example similar -- sandbox/selection --threshold 0.2 --sheets /tmp/sheets
-//! cargo run --release -p corrode-core --example similar -- sandbox/selection --time 0 (time off) or --time 0.7 --scale 600
+//! cargo run --release -p corrode-core --example similar -- sandbox/selection --time 0.5 --scale 300   # --time 0 ignores the time taken
 //! ```
 
 use std::env;

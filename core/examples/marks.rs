@@ -7,8 +7,8 @@
 //!
 //! ```sh
 //! cargo run -p corrode-core --example marks -- show /tmp/corrode-test/*.RW2
-//! cargo run -p corrode-core --example marks -- set --rank 4 --color green /tmp/corrode-test/P1011259.RW2
-//! cargo run -p corrode-core --example marks -- set --trash /tmp/corrode-test/P1011260.JPG
+//! cargo run -p corrode-core --example marks -- set --rank 4 --color green /tmp/corrode-test/shot.RW2
+//! cargo run -p corrode-core --example marks -- set --trash /tmp/corrode-test/shot.JPG
 //! ```
 
 use std::env;

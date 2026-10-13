@@ -4,7 +4,7 @@
 //! one end to the other over the animation.
 //!
 //! ```sh
-//! cargo run --release -p corrode-core --example glitchgif -- sandbox/P1011259.JPG sandbox/out/x.gif frames=24 fps=12 width=800 seed=11 slice slices=10 shift=20..160 split=true + bend hits=0..12
+//! cargo run --release -p corrode-core --example glitchgif -- sandbox/photo.JPG sandbox/out/x.gif frames=24 fps=12 width=800 seed=11 slice slices=10 shift=20..160 split=true + bend hits=0..12
 //! ```
 //!
 //! Options before the recipe: `frames` (24), `fps` (12), `width` of the

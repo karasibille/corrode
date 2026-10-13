@@ -114,7 +114,7 @@ pub struct Batch {
 
 /// Sorts shots into subfolders of `dir`, one per batch of at least two
 /// shots, named after its label and the stem of its first shot
-/// (`bleu-_1117041`); shots alone stay where they are. A folder that
+/// (`bleu-IMG_0042`); shots alone stay where they are. A folder that
 /// already exists is never reused, a number is added to the name. Each
 /// shot moves whole, as with `send`; if one fails, the sorting stops
 /// there: what was sorted before stays sorted, and is given with the
