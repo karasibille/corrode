@@ -1,6 +1,6 @@
 # name | recipe, applied to photo.jpg with seed=7
 loss | loss
-bend | bend quality=90 hits=8
+bend | bend
 sort | sort
 slice | slice
 stretch | stretch
@@ -21,7 +21,9 @@ bloom | bloom
 liquid | liquid
 falsecolor | falsecolor
 falsecolor-rotate | falsecolor order=rgb rotate=120
-remap | remap map=blue:orange saturation=150
+onepoint | onepoint hue=80deg width=35 soft=30 rest=0
+falsecolor-sky | falsecolor order=rgb rotate=45 saturation=200 only=blue width=25 soft=25
+remap | remap map=blue:orange,green:red saturation=130
 spin | spin angle=14
 spin-ghosts | spin angle=24 steps=5 center=30,60
 chain | sort low=40 high=220 + slice slices=12 split=true + grain
