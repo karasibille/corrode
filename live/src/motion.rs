@@ -25,12 +25,24 @@ pub fn scaled(period: Duration, factor: f64) -> Duration {
     period.mul_f64(factor).clamp(SHORTEST, LONGEST)
 }
 
-/// Whether a recipe has a range (`rotate=-70..70`) that can move.
-pub fn has_ranges(words: &[String]) -> bool {
+/// The cycle of the patterns after `elapsed`: one a period.
+pub fn cycle(elapsed: Duration, period: Duration) -> f64 {
+    elapsed.as_secs_f64() / period.as_secs_f64().max(f64::EPSILON)
+}
+
+/// Whether a recipe has something that moves: a range (`rotate=-70..70`)
+/// or a pattern (`rotate="0 40 80"`).
+pub fn has_motion(words: &[String]) -> bool {
     words
         .iter()
         .filter_map(|word| word.split_once('='))
-        .any(|(_, value)| value.split(',').any(|part| part[1..].contains("..")))
+        .any(|(_, value)| {
+            value.starts_with('"')
+                || value.split(',').any(|part| {
+                    // A minus sign is not the start of a range.
+                    part.strip_prefix('-').unwrap_or(part).contains("..")
+                })
+        })
 }
 
 #[cfg(test)]
@@ -59,12 +71,22 @@ mod tests {
     }
 
     #[test]
-    fn ranges_are_found_but_not_negative_numbers_or_dots() {
-        let words = |text: &str| -> Vec<String> { text.split(' ').map(str::to_owned).collect() };
-        assert!(has_ranges(&words("seed=1 falsecolor rotate=-70..70")));
-        assert!(has_ranges(&words("seed=1 spin center=10..50,40")));
-        assert!(has_ranges(&words("seed=1 drag angle=-45..45")));
-        assert!(!has_ranges(&words("seed=1 fade lift=-20 + grain size=2")));
-        assert!(!has_ranges(&words("seed=1 leak color=ff963c")));
+    fn ranges_and_patterns_are_found_but_not_negative_numbers_or_dots() {
+        let words = |text: &str| corrode_effects::split_words(text);
+        assert!(has_motion(&words("seed=1 falsecolor rotate=-70..70")));
+        assert!(has_motion(&words("seed=1 spin center=10..50,40")));
+        assert!(has_motion(&words("seed=1 drag angle=-45..45")));
+        assert!(has_motion(&words("seed=1 slice shift=\"10 20 30\"")));
+        assert!(!has_motion(&words("seed=1 fade lift=-20 + grain size=2")));
+        assert!(!has_motion(&words("seed=1 leak color=ff963c")));
+        // An odd first character does not matter.
+        assert!(!has_motion(&words("seed=1 leak color=é =")));
+    }
+
+    #[test]
+    fn a_cycle_goes_by_each_period() {
+        let period = Duration::from_secs(2);
+        assert_eq!(cycle(Duration::from_secs(5), period), 2.5);
+        assert_eq!(cycle(Duration::ZERO, period), 0.0);
     }
 }

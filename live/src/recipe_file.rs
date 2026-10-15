@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use corrode_effects::Recipe;
+use corrode_effects::{Recipe, Time, split_words};
 
 /// How often the file is read again.
 const POLL: Duration = Duration::from_millis(100);
@@ -23,10 +23,12 @@ pub enum Reading {
     Valid(Box<Recipe>, Vec<String>),
 }
 
-/// The recipe of `words` at a moment of the animation (0 to 1) and a step
-/// of the seed, which is added to it when the seed moves on at each frame.
-pub fn recipe_at(words: &[String], moment: f64, step: u64) -> Result<Recipe, String> {
-    let mut recipe = Recipe::from_words_at(words, moment).map_err(|err| err.to_string())?;
+/// The recipe of `words` at a moment of the ranges (0 to 1), at a cycle
+/// of the patterns, and a step of the seed, which is added to it when the
+/// seed moves on at each frame.
+pub fn recipe_at(words: &[String], moment: f64, cycle: f64, step: u64) -> Result<Recipe, String> {
+    let mut recipe = Recipe::from_words_at_time(words, Time::new(moment, cycle))
+        .map_err(|err| err.to_string())?;
     recipe.seed = recipe.seed.wrapping_add(step);
     Ok(recipe)
 }
@@ -55,10 +57,7 @@ pub fn without_comments(text: &str) -> String {
 
 /// Reads the text of a recipe file.
 pub fn read(text: &str) -> Reading {
-    let words: Vec<String> = without_comments(text)
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect();
+    let words = split_words(&without_comments(text));
     if words.is_empty() {
         return Reading::Empty;
     }
@@ -174,15 +173,30 @@ mod tests {
     fn a_recipe_at_a_moment_takes_its_ranges_and_seed_step() {
         let words: Vec<String> = ["seed=5", "fade", "lift=0..40"].map(str::to_owned).to_vec();
         let (start, end) = (
-            recipe_at(&words, 0.0, 0).unwrap(),
-            recipe_at(&words, 1.0, 3).unwrap(),
+            recipe_at(&words, 0.0, 0.0, 0).unwrap(),
+            recipe_at(&words, 1.0, 0.0, 3).unwrap(),
         );
         assert_eq!((start.seed, end.seed), (5, 8));
         assert_ne!(
             start.to_string().replace("seed=5", ""),
             end.to_string().replace("seed=8", "")
         );
-        assert!(recipe_at(&["nonsense".to_owned()], 0.0, 0).is_err());
+        assert!(recipe_at(&["nonsense".to_owned()], 0.0, 0.0, 0).is_err());
+    }
+
+    #[test]
+    fn patterns_and_changes_are_read_on_several_lines() {
+        let text = "seed=1\n# a pattern, with a # inside\nevery 2 rev\nleak color=\"#ff0000 blue\" # note\n";
+        let Reading::Valid(recipe, words) = read(text) else {
+            panic!("not valid");
+        };
+        assert_eq!(recipe.steps.len(), 1);
+        assert_eq!(words[1], "every");
+        assert_eq!(words.last().unwrap(), "color=\"#ff0000 blue\"");
+        let Reading::Invalid(why) = read("slice shift=\"10 20 oops\"") else {
+            panic!("valid");
+        };
+        assert!(why.contains("oops"), "{why}");
     }
 
     #[test]

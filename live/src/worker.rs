@@ -21,6 +21,8 @@ pub struct Job {
     pub words: Vec<String>,
     /// Where the ranges stand, 0 to 1.
     pub moment: f64,
+    /// How many cycles of the patterns have gone by.
+    pub cycle: f64,
     /// How far the seed has moved on.
     pub step: u64,
 }
@@ -31,6 +33,7 @@ pub struct Done {
     pub generation: u64,
     pub words: Vec<String>,
     pub moment: f64,
+    pub cycle: f64,
     pub step: u64,
     pub result: Result<RgbImage, String>,
     pub elapsed: Duration,
@@ -67,7 +70,7 @@ fn work(source: &RgbImage, jobs: &Receiver<Job>, results: &Sender<Done>) {
             job = newer;
         }
         let start = Instant::now();
-        let result = recipe_at(&job.words, job.moment, job.step).and_then(|recipe| {
+        let result = recipe_at(&job.words, job.moment, job.cycle, job.step).and_then(|recipe| {
             recipe
                 .apply_cached(source, &mut cache)
                 .map_err(|err| err.to_string())
@@ -77,6 +80,7 @@ fn work(source: &RgbImage, jobs: &Receiver<Job>, results: &Sender<Done>) {
             generation: job.generation,
             words: job.words,
             moment: job.moment,
+            cycle: job.cycle,
             step: job.step,
             result,
             elapsed: start.elapsed(),
@@ -101,6 +105,7 @@ mod tests {
             generation: 3,
             words: words.iter().map(|word| (*word).to_owned()).collect(),
             moment,
+            cycle: 0.0,
             step: 0,
         }
     }

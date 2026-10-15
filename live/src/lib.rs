@@ -36,7 +36,7 @@ use ratatui::widgets::Paragraph;
 use ratatui_image::Image;
 use ratatui_image::picker::Picker;
 
-use motion::{PERIOD, has_ranges, moment, scaled};
+use motion::{PERIOD, cycle, has_motion, moment, scaled};
 use recipe_file::{Reading, Watcher, output_path, read, recipe_at};
 use worker::{Done, Job, Worker};
 
@@ -76,6 +76,7 @@ enum Status {
 struct Applied {
     words: Vec<String>,
     moment: f64,
+    cycle: f64,
     step: u64,
 }
 
@@ -110,6 +111,9 @@ struct Live {
     /// How long the animation had run when it was paused.
     frozen: Duration,
     frames: u64,
+    /// The text of the recipe as last asked for at its moment: a held step
+    /// of a pattern resolves to the same text, and is not made again.
+    asked: Option<String>,
     /// A save or a GIF is being made.
     busy: bool,
     finished_tx: Sender<Result<String, String>>,
@@ -155,6 +159,7 @@ impl Live {
             started: Instant::now(),
             frozen: Duration::ZERO,
             frames: 0,
+            asked: None,
             busy: false,
             finished_tx,
             finished,
@@ -178,18 +183,20 @@ impl Live {
             Reading::Valid(_, words) => {
                 self.generation += 1;
                 self.status = Status::Computing;
-                self.animating = has_ranges(&words);
+                self.animating = has_motion(&words);
                 self.paused = false;
                 self.started = Instant::now();
                 self.frames = 0;
                 self.words = Some(words);
-                self.submit(0.0, 0);
+                self.asked = None;
+                self.submit(0.0, 0.0, 0);
             }
         }
     }
 
-    /// Asks for the recipe of the file at a moment of its ranges.
-    fn submit(&mut self, moment: f64, step: u64) {
+    /// Asks for the recipe of the file at a moment of its ranges and a
+    /// cycle of its patterns.
+    fn submit(&mut self, moment: f64, cycle: f64, step: u64) {
         let Some(words) = self.words.clone() else {
             return;
         };
@@ -200,6 +207,7 @@ impl Live {
             generation: self.generation,
             words,
             moment,
+            cycle,
             step,
         });
     }
@@ -221,7 +229,21 @@ impl Live {
         }
         self.frames += 1;
         let step = if self.jitter { self.frames } else { 0 };
-        self.submit(moment(self.elapsed(), self.period), step);
+        let (now, cycles) = (
+            moment(self.elapsed(), self.period),
+            cycle(self.elapsed(), self.period),
+        );
+        // A recipe that is the same as the last asked for is not made again.
+        let text = self.words.as_ref().and_then(|words| {
+            recipe_at(words, now, cycles, step)
+                .ok()
+                .map(|recipe| recipe.to_string())
+        });
+        if text.is_some() && text == self.asked {
+            return;
+        }
+        self.asked = text;
+        self.submit(now, cycles, step);
     }
 
     fn pause(&mut self) {
@@ -264,6 +286,7 @@ impl Live {
                     self.applied = Some(Applied {
                         words: done.words,
                         moment: done.moment,
+                        cycle: done.cycle,
                         step: done.step,
                     });
                     self.status = Status::Applied(done.elapsed);
@@ -307,6 +330,7 @@ impl Live {
         let applied = Applied {
             words: applied.words.clone(),
             moment: applied.moment,
+            cycle: applied.cycle,
             step: applied.step,
         };
         self.busy = true;
@@ -325,7 +349,8 @@ impl Live {
         let path = output_path(&self.source, "jpg", Path::exists);
         let _ = thread::spawn(move || {
             let made = (|| -> Result<String, String> {
-                let recipe = recipe_at(&applied.words, applied.moment, applied.step)?;
+                let recipe =
+                    recipe_at(&applied.words, applied.moment, applied.cycle, applied.step)?;
                 let full = picture::full(&shot)
                     .map_err(|err| err.to_string())?
                     .image
