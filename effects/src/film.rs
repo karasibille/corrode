@@ -12,12 +12,13 @@ use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
 
 use super::Error;
-use super::colour::Color;
+use super::colour::{Color, from_hsv, to_hsv};
 use super::parallel;
 use super::random::Random;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;
 use super::units::{Percent, Size};
+use super::warp::Noise;
 
 /// Width the blurs are made at: enough for a blur, a fraction of the
 /// work.
@@ -371,6 +372,48 @@ pub fn vignette(image: &RgbImage, params: Vignette) -> RgbImage {
     shaded
 }
 
+/// Where the light of a leak comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeakEdge {
+    /// A point on one of the four edges, chosen by the seed.
+    #[default]
+    Random,
+    /// The whole of one side.
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl std::str::FromStr for LeakEdge {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<LeakEdge, String> {
+        match text {
+            "random" => Ok(LeakEdge::Random),
+            "left" => Ok(LeakEdge::Left),
+            "right" => Ok(LeakEdge::Right),
+            "top" => Ok(LeakEdge::Top),
+            "bottom" => Ok(LeakEdge::Bottom),
+            other => Err(format!(
+                "unknown edge '{other}' (random, left, right, top or bottom)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for LeakEdge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LeakEdge::Random => "random",
+            LeakEdge::Left => "left",
+            LeakEdge::Right => "right",
+            LeakEdge::Top => "top",
+            LeakEdge::Bottom => "bottom",
+        })
+    }
+}
+
 /// Parameters of the light leak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Leak {
@@ -379,6 +422,14 @@ pub struct Leak {
     pub strength: Percent,
     /// How far it reaches into the picture, 0 to 100 of the width.
     pub size: Percent,
+    /// Where the light comes from.
+    pub edge: LeakEdge,
+    /// How far the hue wanders round the colour, in degrees either way,
+    /// from one place to another.
+    pub spread: u16,
+    /// How uneven the glow is: how far it reaches and how strong it is
+    /// change from place to place, 0 to 100.
+    pub wobble: Percent,
 }
 
 impl Default for Leak {
@@ -387,31 +438,83 @@ impl Default for Leak {
             color: Color(Rgb([255, 150, 60])),
             strength: Percent::new(70),
             size: Percent::new(50),
+            edge: LeakEdge::Random,
+            spread: 0,
+            wobble: Percent::new(0),
         }
     }
 }
+
+/// Size, for a picture 1000 pixels wide, of the patches of the uneven
+/// reach and strength of a leak, and of its patches of hue.
+const LEAK_PATCH: u32 = 200;
+const LEAK_TINT_PATCH: u32 = 350;
 
 /// Light that got into the camera: a soft glow of colour from a point
 /// on an edge, chosen by the seed, screened over the picture.
 pub fn leak(image: &RgbImage, params: Leak, seed: u64) -> RgbImage {
     let (width, height) = (image.width() as f32, image.height() as f32);
     let mut random = Random::new(seed);
-    // A point on one of the four edges.
-    let along = random.below(1001) as f32 / 1000.0;
-    let (ox, oy) = match random.below(4) {
-        0 => (0.0, height * along),
-        1 => (width, height * along),
-        2 => (width * along, 0.0),
-        _ => (width * along, height),
+    // The point the light comes from, or none for a whole side.
+    let origin = match params.edge {
+        LeakEdge::Random => {
+            let along = random.below(1001) as f32 / 1000.0;
+            Some(match random.below(4) {
+                0 => (0.0, height * along),
+                1 => (width, height * along),
+                2 => (width * along, 0.0),
+                _ => (width * along, height),
+            })
+        }
+        _ => None,
     };
     let reach = width * f32::from(params.size.value()) / 100.0;
     let strength = params.strength.fraction();
     let color = params.color.0.0.map(f32::from);
+    let base_hsv = to_hsv(color.map(|channel| channel / 255.0));
+    let wobble = params.wobble.fraction() * 0.8;
+    let spread = f32::from(params.spread);
+    // Patches of noise, from seeds of their own so that the point
+    // drawn above stays the one a leak always had.
+    let patches = (wobble > 0.0 || spread > 0.0).then(|| {
+        let lattice = |patch: u32, seed: u64| {
+            let cell = Size::new(patch).on_f32(image.width()).max(1.0);
+            let noise = Noise::new(
+                seed,
+                (width / cell).ceil() as usize + 2,
+                (height / cell).ceil() as usize + 2,
+            );
+            (noise, cell)
+        };
+        (
+            lattice(LEAK_PATCH, seed.wrapping_add(0x1EA4)),
+            lattice(LEAK_PATCH, seed.wrapping_add(0x5CA1)),
+            lattice(LEAK_TINT_PATCH, seed.wrapping_add(0x7147)),
+        )
+    });
     let mut lit = image.clone();
     parallel::for_each_pixel(&mut lit, |x, y, pixel| {
-        let (dx, dy) = (x as f32 - ox, y as f32 - oy);
-        let distance = (dx * dx + dy * dy).sqrt() / reach.max(1.0);
-        let glow = (1.0 - distance).clamp(0.0, 1.0);
+        let (px, py) = (x as f32, y as f32);
+        let distance = match (params.edge, origin) {
+            (_, Some((ox, oy))) => ((px - ox).powi(2) + (py - oy).powi(2)).sqrt(),
+            (LeakEdge::Left, _) => px,
+            (LeakEdge::Right, _) => width - px,
+            (LeakEdge::Top, _) => py,
+            _ => height - py,
+        };
+        let (mut reach, mut strength, mut color) = (reach, strength, color);
+        if let Some(((shape, cell), (shade, _), (tint, tint_cell))) = &patches {
+            // From 1 - wobble to 1 + wobble, evenly over the picture.
+            let unevenness =
+                |noise: &Noise, cell: f32| (noise.at(px / cell, py / cell) - 0.5) * 2.0;
+            reach *= (1.0 + unevenness(shape, *cell) * wobble).max(0.2);
+            strength *= (1.0 + unevenness(shade, *cell) * wobble).max(0.0);
+            if spread > 0.0 {
+                let hue = base_hsv[0] + unevenness(tint, *tint_cell) * spread;
+                color = from_hsv([hue, base_hsv[1], base_hsv[2]]).map(|channel| channel * 255.0);
+            }
+        }
+        let glow = (1.0 - distance / reach.max(1.0)).clamp(0.0, 1.0);
         let glow = glow * glow * strength;
         if glow > 0.0 {
             for channel in 0..3 {
@@ -568,13 +671,7 @@ impl Spec for Drag {
         write!(
             f,
             " kind={} length={} angle={} center={},{} mix={} blend={}",
-            self.kind,
-            self.length,
-            self.angle,
-            self.center.0,
-            self.center.1,
-            self.mix,
-            self.blend
+            self.kind, self.length, self.angle, self.center.0, self.center.1, self.mix, self.blend
         )
     }
 
@@ -707,6 +804,18 @@ impl Spec for Leak {
         ("color", "colour of the light"),
         ("strength", "how strong the leak is, 0 to 100"),
         ("size", "how far it reaches, 0 to 100 of the width"),
+        (
+            "edge",
+            "`random` (a point on an edge, from the seed), `left`, `right`, `top` or `bottom` (the whole side)",
+        ),
+        (
+            "spread",
+            "how far the hue wanders round the colour, in degrees either way",
+        ),
+        (
+            "wobble",
+            "how uneven the glow is, in reach and strength, 0 to 100",
+        ),
     ];
 
     fn parse(params: &mut Params) -> Result<Leak, Error> {
@@ -715,14 +824,17 @@ impl Spec for Leak {
             color: params.get("color", d.color)?,
             strength: params.get("strength", d.strength)?,
             size: params.get("size", d.size)?,
+            edge: params.get("edge", d.edge)?,
+            spread: params.get("spread", d.spread)?,
+            wobble: params.get("wobble", d.wobble)?,
         })
     }
 
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " color={} strength={} size={}",
-            self.color, self.strength, self.size
+            " color={} strength={} size={} edge={} spread={} wobble={}",
+            self.color, self.strength, self.size, self.edge, self.spread, self.wobble
         )
     }
 
@@ -934,11 +1046,57 @@ mod tests {
             color: Color(Rgb([255, 150, 60])),
             strength: Percent::new(100),
             size: Percent::new(60),
+            ..Leak::default()
         };
         let lit = leak(&flat, params, 1);
         assert!(mean(&lit) > 41.0);
         assert_eq!(leak(&flat, params, 1), lit);
         assert_ne!(leak(&flat, params, 2), lit);
+    }
+
+    #[test]
+    fn a_leak_from_a_side_lights_the_whole_side() {
+        let flat = RgbImage::from_pixel(200, 100, Rgb([40; 3]));
+        let params = Leak {
+            strength: Percent::new(100),
+            size: Percent::new(50),
+            edge: LeakEdge::Left,
+            ..Leak::default()
+        };
+        let lit = leak(&flat, params, 1);
+        for y in [0, 50, 99] {
+            assert!(lit.get_pixel(5, y)[0] > 150, "row {y}");
+            assert_eq!(lit.get_pixel(150, y), &Rgb([40; 3]), "row {y}");
+        }
+    }
+
+    #[test]
+    fn a_wobbly_leak_is_uneven_and_its_hue_wanders() {
+        let flat = RgbImage::from_pixel(200, 100, Rgb([40; 3]));
+        let even = Leak {
+            strength: Percent::new(100),
+            edge: LeakEdge::Left,
+            ..Leak::default()
+        };
+        let uneven = Leak {
+            spread: 60,
+            wobble: Percent::new(100),
+            ..even
+        };
+        let (plain, wobbly) = (leak(&flat, even, 1), leak(&flat, uneven, 1));
+        assert_ne!(plain, wobbly);
+        assert_eq!(leak(&flat, uneven, 1), wobbly, "the same for a seed");
+        // On a column of the edge, the colour is not the same everywhere.
+        let ratios: Vec<f32> = (0..100)
+            .map(|y| {
+                let pixel = wobbly.get_pixel(2, y);
+                f32::from(pixel[1]) / f32::from(pixel[0]).max(1.0)
+            })
+            .collect();
+        let (low, high) = ratios
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(l, h), &r| (l.min(r), h.max(r)));
+        assert!(high - low > 0.1, "{low} {high}");
     }
 
     #[test]

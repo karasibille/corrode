@@ -78,14 +78,14 @@ pub fn liquid(image: &RgbImage, params: Liquid, seed: u64) -> RgbImage {
 
 /// Value noise: random values on a lattice, smoothly interpolated
 /// between them.
-struct Noise {
+pub(super) struct Noise {
     width: usize,
     height: usize,
     values: Vec<f32>,
 }
 
 impl Noise {
-    fn new(seed: u64, width: usize, height: usize) -> Noise {
+    pub(super) fn new(seed: u64, width: usize, height: usize) -> Noise {
         let mut random = Random::new(seed);
         let values = (0..width * height)
             .map(|_| random.below(10_001) as f32 / 10_000.0)
@@ -99,7 +99,7 @@ impl Noise {
 
     /// The noise at a point, 0 to 1, the lattice repeating beyond its
     /// edges.
-    fn at(&self, u: f32, v: f32) -> f32 {
+    pub(super) fn at(&self, u: f32, v: f32) -> f32 {
         let (u0, v0) = (u.floor(), v.floor());
         let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
         let (fu, fv) = (smooth(u - u0), smooth(v - v0));

@@ -25,8 +25,8 @@ mod zone;
 
 pub use colour::{Color, Hue};
 pub use film::{
-    Aberration, Blend, Bloom, Drag, DragKind, Fade, Grain, Leak, Vignette, aberration, bloom, drag,
-    fade, grain, leak, vignette,
+    Aberration, Blend, Bloom, Drag, DragKind, Fade, Grain, Leak, LeakEdge, Vignette, aberration,
+    bloom, drag, fade, grain, leak, vignette,
 };
 pub use ghost::{Ghost, GhostBlend, ghost, track};
 pub use glitch::{
