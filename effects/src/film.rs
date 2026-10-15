@@ -590,7 +590,7 @@ impl Default for Streaks {
             count: 3,
             width: Percent::new(28),
             spread: 20,
-            wobble: Percent::new(50),
+            wobble: Percent::new(0),
             softness: Percent::new(40),
             position: StreakPosition::Random,
         }
