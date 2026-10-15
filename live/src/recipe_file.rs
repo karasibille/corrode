@@ -31,11 +31,24 @@ pub fn recipe_at(words: &[String], moment: f64, step: u64) -> Result<Recipe, Str
     Ok(recipe)
 }
 
-/// The text without its comments, which run from `#` to the end of the
-/// line.
+/// The text without its comments. A comment runs from a `#` to the end
+/// of the line, the `#` being the first thing on the line or after a
+/// blank, and outside quotes: `color=#ff963c` is a colour, not a comment.
 pub fn without_comments(text: &str) -> String {
     text.lines()
-        .map(|line| line.split('#').next().unwrap_or_default())
+        .map(|line| {
+            let mut quoted = false;
+            let mut before = ' ';
+            for (at, c) in line.char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '#' if !quoted && before.is_whitespace() => return &line[..at],
+                    _ => {}
+                }
+                before = c;
+            }
+            line
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -124,6 +137,26 @@ mod tests {
         assert_eq!(without_comments("a # b\n# c\nd"), "a \n\nd");
         assert_eq!(read(""), Reading::Empty);
         assert_eq!(read("  \n# nothing yet\n"), Reading::Empty);
+    }
+
+    #[test]
+    fn a_hash_starts_a_comment_only_after_a_blank_and_not_in_a_colour() {
+        assert_eq!(
+            without_comments("leak color=#ff963c # warm"),
+            "leak color=#ff963c "
+        );
+        assert_eq!(
+            without_comments("#only\nfade#not a comment"),
+            "\nfade#not a comment"
+        );
+        assert!(matches!(
+            read("seed=1 leak color=#ff963c # warm"),
+            Reading::Valid(..)
+        ));
+        assert!(matches!(
+            read("seed=1 duotone dark=#102 light=#fc8"),
+            Reading::Valid(..)
+        ));
     }
 
     #[test]
