@@ -85,6 +85,10 @@ impl Viewer {
         }
         if let Mode::Zoom { scale, .. } = self.app.mode {
             parts.push((1, vec![Span::from(format!("{}%", 100 * scale)).bold()]));
+            if self.rendering() {
+                let waiting = format!("{} RawTherapee…", self.spinner());
+                parts.push((1, vec![Span::from(waiting).fg(Color::Cyan).bold()]));
+            }
         }
         fit(&parts, usize::from(width))
     }

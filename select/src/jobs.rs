@@ -15,7 +15,7 @@ use corrode_core::exif::{Exif, Head};
 use corrode_core::marks::Marks;
 use corrode_core::pairing::Shot;
 use corrode_core::picture::{self, Picture};
-use corrode_core::{banding, rawtherapee, sharpness};
+use corrode_core::{banding, rawtherapee, render, sharpness};
 use image::DynamicImage;
 
 use crate::culling::Assessment;
@@ -73,6 +73,9 @@ pub enum Job {
     Head(ShotId),
     Preview(ShotId),
     Full(ShotId),
+    /// The RAW developed by RawTherapee with its sidecar, which takes
+    /// seconds and replaces the quick development of `Full` when ready.
+    Render(ShotId),
     /// Sharpness around the focus point, and light bands, from the preview.
     Assess(ShotId),
     /// Removes the light bands of the RAW into a DNG next to it.
@@ -85,6 +88,7 @@ impl Job {
             Job::Head(id)
             | Job::Preview(id)
             | Job::Full(id)
+            | Job::Render(id)
             | Job::Assess(id)
             | Job::Deband(id) => id,
         }
@@ -233,6 +237,11 @@ fn run(
         Job::Preview(_) => loaded(preview()),
         Job::Full(_) => loaded(
             picture::full(shot)
+                .map(Arc::new)
+                .map_err(|err| err.to_string()),
+        ),
+        Job::Render(_) => loaded(
+            render::render(shot)
                 .map(Arc::new)
                 .map_err(|err| err.to_string()),
         ),

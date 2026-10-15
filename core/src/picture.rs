@@ -39,6 +39,8 @@ pub enum Origin {
     RawPreview,
     /// The RAW demosaiced at full size.
     RawDevelop,
+    /// The RAW developed by RawTherapee with its sidecar.
+    Rendered,
 }
 
 #[derive(Debug)]

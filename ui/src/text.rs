@@ -1,6 +1,8 @@
 //! Text laid out to the terminal: lines that fit the width, keys and
 //! what they do, a rectangle in the middle of another.
 
+use std::time::Duration;
+
 use ratatui::layout::{Rect, Size};
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
@@ -74,6 +76,13 @@ pub fn fit(parts: &[(u8, Vec<Span<'static>>)], width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
+/// The turning dots of a wait, one frame for each tenth of a second the
+/// wait has lasted: a character, so that it goes in any line of text.
+pub fn spinner(elapsed: Duration) -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    FRAMES[(elapsed.as_millis() / 80) as usize % FRAMES.len()]
+}
+
 /// A rectangle of the given size centred in `area`.
 pub fn centered(area: Rect, size: Size) -> Rect {
     let width = size.width.min(area.width);
@@ -89,6 +98,16 @@ pub fn centered(area: Rect, size: Size) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_spinner_turns_through_ten_frames_and_comes_round() {
+        let at = |ms: u64| spinner(Duration::from_millis(ms));
+        assert_ne!(at(0), at(80), "a frame every 80 ms");
+        assert_eq!(at(0), at(800), "ten frames make a turn");
+        let frames: std::collections::HashSet<char> = (0..10).map(|i| at(i * 80)).collect();
+        assert_eq!(frames.len(), 10);
+        assert_eq!(at(79), at(0));
+    }
 
     #[test]
     fn the_least_important_parts_go_first() {

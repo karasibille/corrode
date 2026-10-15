@@ -51,7 +51,7 @@ impl Viewer {
         key(
             &mut lines,
             "z  Enter",
-            "zoom to 100%; arrows move around, Ctrl+arrows and the other keys change shot at the same spot, to compare; again or Esc to leave",
+            "zoom to 100%; arrows move around, Ctrl+arrows and the other keys change shot at the same spot, to compare; again or Esc to leave. Work in progress for a RAW without JPEG: a quick development first, then RawTherapee's render",
         );
         key(
             &mut lines,

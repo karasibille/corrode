@@ -17,6 +17,7 @@ pub mod picture;
 pub mod pp3;
 pub mod preset;
 pub mod rawtherapee;
+pub mod render;
 pub mod selection;
 pub mod sharpness;
 pub mod similarity;

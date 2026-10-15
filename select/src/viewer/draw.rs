@@ -112,7 +112,7 @@ impl Viewer {
             }),
         };
         let message = match wanted {
-            None => Some("loading…".to_owned()),
+            None => Some(format!("{} loading…", self.spinner())),
             Some((Err(err), _)) => Some(err),
             Some((Ok(picture), crop)) => {
                 let request = Request {
@@ -139,7 +139,10 @@ impl Viewer {
                     Err(err) => frame.render_widget(Paragraph::new(err.as_str()).centered(), area),
                 }
             }
-            _ => frame.render_widget(Paragraph::new("drawing…").centered(), area),
+            _ => frame.render_widget(
+                Paragraph::new(format!("{} drawing…", self.spinner())).centered(),
+                area,
+            ),
         }
     }
 

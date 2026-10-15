@@ -7,12 +7,12 @@ mod draw;
 mod help;
 mod lines;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use corrode_core::bursts;
 use corrode_core::cache::Cache;
@@ -21,6 +21,7 @@ use corrode_core::marks::Marks;
 use corrode_core::pairing::{self, Shot};
 use corrode_core::picture::Picture;
 use corrode_core::rawtherapee::Config;
+use corrode_core::render;
 use image::DynamicImage;
 use ratatui::layout::Size;
 use ratatui_image::FontSize;
@@ -32,6 +33,7 @@ use crate::culling::{self, Assessment, Progress};
 use crate::jobs::{self, Job, Loaded, Registry, SharedRegistry, ShotId, Version};
 use corrode_ui::encoder::{Encoded, Encoder, Request};
 use corrode_ui::loader::Loader;
+use corrode_ui::text::spinner;
 
 /// Shots decoded ahead on each side of the current one.
 const PRELOAD: usize = 2;
@@ -109,6 +111,9 @@ pub struct Viewer {
     /// The current shot's, and its neighbours' and the lately seen ones'
     /// while zoomed.
     fulls: HashMap<ShotId, Result<Arc<Picture>, String>>,
+    /// The shots whose full picture is RawTherapee's render, or whose
+    /// render failed, so that it is not asked for again.
+    rendered: HashSet<ShotId>,
     /// Shots seen zoomed, the latest first, at most `RECENT_FULL`.
     recent: VecDeque<ShotId>,
     timings: HashMap<Job, Duration>,
@@ -133,6 +138,8 @@ pub struct Viewer {
     help: bool,
     /// How many lines the help is scrolled down.
     help_scroll: u16,
+    /// When the viewer started, which the turning dots of a wait count from.
+    started: Instant,
 }
 
 impl Viewer {
@@ -184,6 +191,7 @@ impl Viewer {
             ),
             previews: HashMap::new(),
             fulls: HashMap::new(),
+            rendered: HashSet::new(),
             recent: VecDeque::new(),
             timings: HashMap::new(),
             scheduled: None,
@@ -196,6 +204,7 @@ impl Viewer {
             pending_groups: None,
             help: false,
             help_scroll: 0,
+            started: Instant::now(),
         }
     }
 
@@ -215,6 +224,27 @@ impl Viewer {
         matches!(self.app.mode, Mode::Zoom { .. })
             && (self.position(id).abs_diff(self.app.index) <= KEEP_FULL
                 || self.recent.contains(&id))
+    }
+
+    /// Whether RawTherapee's render of a shot is worth asking for: a RAW
+    /// without JPEG, not rendered yet, and the program there.
+    fn wants_render(&self, id: ShotId) -> bool {
+        let shot = &self.shots[self.position(id)];
+        shot.raw.is_some()
+            && shot.jpeg.is_none()
+            && !self.rendered.contains(&id)
+            && render::available()
+    }
+
+    /// Whether the render of the current shot is being made, while the
+    /// quick development shows.
+    fn rendering(&self) -> bool {
+        matches!(self.app.mode, Mode::Zoom { .. }) && self.wants_render(self.id(self.app.index))
+    }
+
+    /// The turning dots of a wait, as of now.
+    fn spinner(&self) -> char {
+        spinner(self.started.elapsed())
     }
 
     fn full_picture(&self) -> Option<&Arc<Picture>> {
@@ -237,6 +267,7 @@ impl Viewer {
             self.times[position] = Time::Unknown;
             self.previews.remove(&id);
             self.fulls.remove(&id);
+            self.rendered.remove(&id);
             self.recent.retain(|&i| i != id);
             self.scheduled = None;
             self.cache_saved = false;
@@ -295,6 +326,7 @@ impl Viewer {
             .filter(|&i| i == id || self.keeps_full(i))
             .collect();
         self.fulls.retain(|i, _| kept.contains(i));
+        self.rendered.retain(|i| self.fulls.contains_key(i));
 
         let last = self.shots.len() - 1;
         let neighbours = (1..=PRELOAD).flat_map(|distance| {
@@ -310,6 +342,10 @@ impl Viewer {
         let mut jobs = vec![Job::Head(id), Job::Preview(id)];
         if zoomed {
             jobs.insert(1, Job::Full(id));
+            if self.wants_render(id) {
+                // After the quick development, which shows meanwhile.
+                jobs.insert(2, Job::Render(id));
+            }
             let near = (1..=KEEP_FULL).flat_map(|distance| {
                 [
                     index.checked_add(distance).filter(|&i| i <= last),
@@ -330,6 +366,7 @@ impl Viewer {
             Job::Head(i) => self.times[self.position(i)] == Time::Unknown,
             Job::Preview(i) => !self.previews.contains_key(&i),
             Job::Full(i) => !self.fulls.contains_key(&i),
+            Job::Render(i) => !self.rendered.contains(&i),
             Job::Assess(i) => self.states[self.position(i)].assessment.is_none(),
             // Only started by the user, through the loader's pinned jobs.
             Job::Deband(_) => false,
@@ -451,7 +488,22 @@ impl Viewer {
                             self.previews.insert(i, picture);
                         }
                         Job::Full(i) if i == current || self.keeps_full(i) => {
-                            self.fulls.insert(i, picture);
+                            // A render already there is the better one.
+                            if !self.rendered.contains(&i) {
+                                self.fulls.insert(i, picture);
+                            }
+                        }
+                        Job::Render(i) if i == current || self.keeps_full(i) => {
+                            match picture {
+                                Ok(picture) => {
+                                    self.fulls.insert(i, Ok(picture));
+                                }
+                                Err(err) => {
+                                    // The quick development stays.
+                                    self.message = Some(Err(format!("RawTherapee: {err}")));
+                                }
+                            }
+                            self.rendered.insert(i);
                         }
                         _ => {}
                     }
@@ -609,6 +661,31 @@ mod tests {
             Some(selection_dir.join("bleu-A/A.RW2"))
         );
         assert_eq!(viewer.states[0].marks().unwrap().rank, 3);
+    }
+
+    #[test]
+    fn only_a_raw_without_jpeg_asks_for_a_render_and_only_once() {
+        let shoot = shoot();
+        let mut viewer = viewer(shoot.path());
+        // A has no JPEG; B and C have one, and the render needs the program.
+        let (raw, jpeg) = (viewer.id(0), viewer.id(1));
+        assert_eq!(viewer.wants_render(raw), render::available());
+        assert!(!viewer.wants_render(jpeg));
+        // Once rendered, or failed, it is not asked for again, and it is
+        // forgotten with the full picture, so that coming back asks the
+        // cache, which is quick.
+        viewer.rendered.insert(raw);
+        assert!(!viewer.wants_render(raw));
+        viewer.app.mode = Mode::Zoom {
+            x: 0,
+            y: 0,
+            scale: 1,
+        };
+        assert!(!viewer.rendering());
+        viewer.rendered.clear();
+        assert_eq!(viewer.rendering(), render::available());
+        viewer.replace_shot(0, viewer.shots[0].clone(), true);
+        assert!(viewer.rendered.is_empty());
     }
 
     #[test]
