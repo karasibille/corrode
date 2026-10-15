@@ -4,6 +4,7 @@
 //! one seed for whatever they draw at random, so that a result can be
 //! made again from its text.
 
+mod animation;
 mod colour;
 mod film;
 mod ghost;
@@ -24,6 +25,7 @@ mod units;
 mod warp;
 mod zone;
 
+pub use animation::{Animation, Easing, animate, write_gif};
 pub use colour::{Color, Hue};
 pub use film::{
     Aberration, Blend, Bloom, Drag, DragKind, Fade, Grain, Leak, LeakEdge, StreakPosition, Streaks,
