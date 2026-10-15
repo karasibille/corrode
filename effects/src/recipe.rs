@@ -188,11 +188,64 @@ pub struct Recipe {
     pub steps: Vec<Effect>,
 }
 
+/// What the steps of a recipe left behind, to be used again by a recipe
+/// that starts the same way: the picture after each step, with the text of
+/// the steps up to it and the seed. It holds for one source picture.
+#[derive(Default)]
+pub struct StepCache {
+    steps: Vec<(String, RgbImage)>,
+}
+
+impl StepCache {
+    /// How many steps are kept.
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+}
+
 impl Recipe {
     pub fn apply(&self, image: &RgbImage) -> Result<RgbImage, Error> {
         let mut current = image.clone();
         for (rank, effect) in self.steps.iter().enumerate() {
             current = effect.apply(&current, self.seed.wrapping_add(rank as u64))?;
+        }
+        Ok(current)
+    }
+
+    /// The same result as [`Recipe::apply`], starting from the last step
+    /// `cache` holds that this recipe has in common with the one before it:
+    /// when only the last effect changes, only the last effect is made
+    /// again. The cache must only be used with the same `image`.
+    pub fn apply_cached(&self, image: &RgbImage, cache: &mut StepCache) -> Result<RgbImage, Error> {
+        // What a step leaves depends on the steps before it and the seed,
+        // which each step takes with its rank added.
+        let mut text = format!("seed={}", self.seed);
+        let keys: Vec<String> = self
+            .steps
+            .iter()
+            .map(|effect| {
+                text = format!("{text} + {effect}");
+                text.clone()
+            })
+            .collect();
+        let kept = cache
+            .steps
+            .iter()
+            .zip(&keys)
+            .take_while(|((key, _), wanted)| key == *wanted)
+            .count();
+        cache.steps.truncate(kept);
+        let mut current = match cache.steps.last() {
+            Some((_, picture)) => picture.clone(),
+            None => image.clone(),
+        };
+        for (rank, effect) in self.steps.iter().enumerate().skip(kept) {
+            current = effect.apply(&current, self.seed.wrapping_add(rank as u64))?;
+            cache.steps.push((keys[rank].clone(), current.clone()));
         }
         Ok(current)
     }
@@ -370,6 +423,38 @@ mod tests {
 
     use super::*;
     use crate::Size;
+
+    #[test]
+    fn a_cached_recipe_gives_what_apply_gives_and_keeps_its_steps() {
+        let image = RgbImage::from_fn(60, 40, |x, y| Rgb([(x * 4) as u8, (y * 6) as u8, 90]));
+        let apply = |text: &str, cache: &mut StepCache| {
+            let recipe: Recipe = text.parse().unwrap();
+            let cached = recipe.apply_cached(&image, cache).unwrap();
+            assert!(cached == recipe.apply(&image).unwrap(), "{text}");
+        };
+        let mut cache = StepCache::default();
+        assert!(cache.is_empty());
+        apply("seed=3 grain + fade lift=10 + vignette", &mut cache);
+        assert_eq!(cache.len(), 3);
+        // Only the last step changes, then a middle one, then the seed:
+        // each time the result is what a fresh application gives.
+        apply(
+            "seed=3 grain + fade lift=10 + vignette strength=80",
+            &mut cache,
+        );
+        apply(
+            "seed=3 grain + fade lift=30 + vignette strength=80",
+            &mut cache,
+        );
+        apply(
+            "seed=4 grain + fade lift=30 + vignette strength=80",
+            &mut cache,
+        );
+        apply("seed=4 grain", &mut cache);
+        assert_eq!(cache.len(), 1);
+        apply("seed=4 grain + fade + vignette + grain", &mut cache);
+        assert_eq!(cache.len(), 4);
+    }
 
     #[test]
     fn a_recipe_reads_and_prints_the_same() {

@@ -90,6 +90,8 @@ fade lift=20
 
 - The recipe is applied to a copy of the picture reduced to 1000 pixels on its longer side, in a background thread, so that the screen never waits. The status line says how long it took. `loss` and `bend` work on blocks and bytes, which do not shrink with the picture, so their preview differs from the full-size result.
 - A recipe that is not valid, or that is half typed, does not clear the picture: the last good result stays and the status line says what is wrong. A file that is empty for a moment, as when an editor saves, is ignored.
-- `s` applies the last good recipe to the full-size picture (a RAW is developed first) and saves it next to the picture as `photo-live.jpg`, then `photo-live-2.jpg`: nothing is overwritten.
-- `g` makes a GIF the way [`corrode gif`](../README.md#gallery) does, from the ranges `a..b` of the recipe, as `photo-live.gif`.
+- A parameter written as a range, `rotate=-70..70`, moves on its own: the ranges go from one end to the other and back, slow at both ends, in 3 seconds, and a new picture is made as soon as the last one is done, about ten a second for a light recipe. Only the effects from the first one that moves are made again: the ones before it are kept, so a range in the last effect costs one effect, not the whole recipe.
+- `space` pauses and resumes, `[` and `]` slow down and speed up, `j` makes the seed move on at each frame, so that what is drawn at random shakes (the waves of `liquid` then change at each picture, which is rarely what you want, so it starts off).
+- `s` applies the recipe, as it is on screen (at the moment where a moving recipe is paused or passing), to the full-size picture (a RAW is developed first) and saves it next to the picture as `photo-live.jpg`, then `photo-live-2.jpg`: nothing is overwritten.
+- `g` makes a GIF the way [`corrode gif`](../README.md#gallery) does, from the ranges of the recipe, as `photo-live.gif`.
 - `q` or `Esc` quits.

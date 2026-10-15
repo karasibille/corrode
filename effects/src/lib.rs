@@ -42,7 +42,7 @@ pub use grade::{
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
 pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use prism::{Prism, PrismKind, prism};
-pub use recipe::{Effect, NAMES, ParamInfo, Recipe, describe};
+pub use recipe::{Effect, NAMES, ParamInfo, Recipe, StepCache, describe};
 pub use register::{register, shifted};
 pub use remap::{HueMap, MAX_MOVES, Remap, remap};
 pub use sort::{Direction, PixelSort, pixel_sort};

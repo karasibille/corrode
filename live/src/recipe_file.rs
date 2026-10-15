@@ -18,8 +18,17 @@ pub enum Reading {
     Empty,
     /// Not a recipe, with what is wrong.
     Invalid(String),
-    /// A recipe, and its words, which an animation reads again.
+    /// A recipe, with its words, which are read again at each moment of
+    /// an animation.
     Valid(Box<Recipe>, Vec<String>),
+}
+
+/// The recipe of `words` at a moment of the animation (0 to 1) and a step
+/// of the seed, which is added to it when the seed moves on at each frame.
+pub fn recipe_at(words: &[String], moment: f64, step: u64) -> Result<Recipe, String> {
+    let mut recipe = Recipe::from_words_at(words, moment).map_err(|err| err.to_string())?;
+    recipe.seed = recipe.seed.wrapping_add(step);
+    Ok(recipe)
 }
 
 /// The text without its comments, which run from `#` to the end of the
@@ -126,6 +135,21 @@ mod tests {
         assert_eq!(recipe.seed, 7);
         assert_eq!(recipe.steps.len(), 2);
         assert_eq!(words, ["seed=7", "fade", "+", "grain", "strength=40"]);
+    }
+
+    #[test]
+    fn a_recipe_at_a_moment_takes_its_ranges_and_seed_step() {
+        let words: Vec<String> = ["seed=5", "fade", "lift=0..40"].map(str::to_owned).to_vec();
+        let (start, end) = (
+            recipe_at(&words, 0.0, 0).unwrap(),
+            recipe_at(&words, 1.0, 3).unwrap(),
+        );
+        assert_eq!((start.seed, end.seed), (5, 8));
+        assert_ne!(
+            start.to_string().replace("seed=5", ""),
+            end.to_string().replace("seed=8", "")
+        );
+        assert!(recipe_at(&["nonsense".to_owned()], 0.0, 0).is_err());
     }
 
     #[test]
