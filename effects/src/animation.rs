@@ -8,7 +8,7 @@ use std::path::Path;
 use image::codecs::gif::{GifEncoder, Repeat};
 use image::{Delay, DynamicImage, Frame, RgbImage};
 
-use super::{Error, Recipe};
+use super::{Error, Recipe, Time};
 
 /// How the ranges of a recipe move over the animation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +61,9 @@ impl Default for Animation {
 
 /// The frames of the recipe `words` on `image`: each parameter given as a
 /// range goes from one end to the other, then, with `boomerang`, back.
+/// The patterns of the recipe (`"0 40 80"`) play one cycle over these
+/// frames; the way back repeats the frames reversed, so the patterns play
+/// backwards there, which `boomerang: false` avoids.
 pub fn animate<S: AsRef<str>>(
     image: &RgbImage,
     words: &[S],
@@ -70,7 +73,8 @@ pub fn animate<S: AsRef<str>>(
     let mut frames = Vec::with_capacity(animation.frames as usize * 2);
     for i in 0..animation.frames {
         let t = animation.easing.at(f64::from(i) / last);
-        let mut recipe = Recipe::from_words_at(words, t)?;
+        let cycle = f64::from(i) / f64::from(animation.frames.max(1));
+        let mut recipe = Recipe::from_words_at_time(words, Time::new(t, cycle))?;
         if animation.jitter {
             recipe.seed = recipe.seed.wrapping_add(u64::from(i));
         }

@@ -13,6 +13,7 @@ mod grade;
 mod jpeg;
 mod mask;
 mod parallel;
+mod pattern;
 mod print;
 mod prism;
 mod random;
@@ -40,6 +41,7 @@ pub use grade::{
     tritone,
 };
 pub use jpeg::{Databend, GenerationLoss, databend, generation_loss};
+pub use pattern::{Change, Pattern, Time, split_words};
 pub use print::{Dither, DitherMethod, Duotone, Scanlines, dither, duotone, scanlines};
 pub use prism::{Prism, PrismKind, prism};
 pub use recipe::{Effect, NAMES, ParamInfo, Recipe, StepCache, describe};
@@ -62,6 +64,8 @@ pub enum Error {
         name: String,
         value: String,
     },
+    #[error("{0}")]
+    Syntax(String),
     #[error("no effect given")]
     Empty,
     #[error("{0}")]

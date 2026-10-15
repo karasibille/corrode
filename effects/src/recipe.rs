@@ -28,6 +28,7 @@ use super::film::{Aberration, Bloom, Drag, Fade, Grain, Leak, Streaks, Vignette}
 use super::glitch::{ChannelSplit, PixelStretch, SliceShift};
 use super::grade::{FalseColor, OnePoint, Tritone};
 use super::jpeg::{Databend, GenerationLoss};
+use super::pattern::{Change, Pattern, Time, split_words};
 use super::print::{Dither, Duotone, Scanlines};
 use super::prism::Prism;
 use super::remap::Remap;
@@ -92,8 +93,8 @@ macro_rules! effects {
 
             /// An effect from its name and its `name=value` parameters,
             /// read at moment `t` for the ranges.
-            fn parse(name: &str, pairs: &[(&str, &str)], t: f64) -> Result<Effect, Error> {
-                let mut params = Params::new(name, pairs, t);
+            fn parse(name: &str, pairs: &[(&str, &str)], time: Time) -> Result<Effect, Error> {
+                let mut params = Params::new(name, pairs, time);
                 $(
                     if name == <$spec as Spec>::NAME {
                         let effect = Effect::$variant(<$spec as Spec>::parse(&mut params)?);
@@ -101,7 +102,7 @@ macro_rules! effects {
                         return Ok(effect);
                     }
                 )*
-                Err(Error::UnknownEffect(name.to_owned()))
+                Err(unknown_effect(name))
             }
         }
 
@@ -159,7 +160,7 @@ pub struct ParamInfo {
 /// the help of the tools are made from.
 pub fn describe(name: &str) -> Result<Vec<ParamInfo>, Error> {
     let help = Effect::help(name).ok_or_else(|| Error::UnknownEffect(name.to_owned()))?;
-    let text = Effect::parse(name, &[], 0.0)?.to_string();
+    let text = Effect::parse(name, &[], Time::default())?.to_string();
     let defaults: Vec<(&str, &str)> = text
         .split(' ')
         .skip(1)
@@ -260,12 +261,34 @@ impl Recipe {
     /// a parameter given as a range `a..b` stands at `t` between `a`
     /// and `b`.
     pub fn from_words_at<S: AsRef<str>>(words: &[S], t: f64) -> Result<Recipe, Error> {
+        Recipe::from_words_at_time(words, Time::new(t, 0.0))
+    }
+
+    /// A recipe from its words at a time: where the ranges stand, and how
+    /// many cycles of its patterns (`"0 40 80"`) have gone by, as changed
+    /// by the `fast`, `slow`, `rev` and `every` written before an effect.
+    pub fn from_words_at_time<S: AsRef<str>>(words: &[S], time: Time) -> Result<Recipe, Error> {
         let mut seed = 1;
         let mut steps = Vec::new();
-        let mut current: Option<(&str, Vec<(&str, &str)>)> = None;
-        for word in words {
-            let word = word.as_ref();
+        // The effect being read: its name, its parameters and the time it
+        // is read at, the changes written before it taken into account.
+        let mut current: Option<Reading> = None;
+        let mut changes: Vec<Change> = Vec::new();
+        let mut at = 0;
+        while at < words.len() {
+            let word = words[at].as_ref();
+            at += 1;
             if word == "+" || word.is_empty() {
+                continue;
+            }
+            if !word.contains('=')
+                && let Some((change, used)) = Change::read(words, at - 1).map_err(Error::Syntax)?
+            {
+                if let Some((name, pairs, time)) = current.take() {
+                    steps.push(Effect::parse(name, &pairs, time)?);
+                }
+                changes.push(change);
+                at += used - 1;
                 continue;
             }
             match (word.split_once('='), &mut current) {
@@ -276,7 +299,7 @@ impl Recipe {
                         value: value.into(),
                     })?;
                 }
-                (Some((name, value)), Some((_, pairs))) => pairs.push((name, value)),
+                (Some((name, value)), Some((_, pairs, _))) => pairs.push((name, value)),
                 (Some((name, _)), None) => {
                     return Err(Error::UnknownParameter {
                         effect: "recipe".into(),
@@ -284,15 +307,18 @@ impl Recipe {
                     });
                 }
                 (None, _) => {
-                    if let Some((name, pairs)) = current.take() {
-                        steps.push(Effect::parse(name, &pairs, t)?);
+                    if let Some((name, pairs, time)) = current.take() {
+                        steps.push(Effect::parse(name, &pairs, time)?);
                     }
-                    current = Some((word, Vec::new()));
+                    let cycle = changes
+                        .drain(..)
+                        .fold(time.cycle, |cycle, change| change.apply(cycle));
+                    current = Some((word, Vec::new(), Time { cycle, ..time }));
                 }
             }
         }
-        if let Some((name, pairs)) = current.take() {
-            steps.push(Effect::parse(name, &pairs, t)?);
+        if let Some((name, pairs, time)) = current.take() {
+            steps.push(Effect::parse(name, &pairs, time)?);
         }
         if steps.is_empty() {
             return Err(Error::Empty);
@@ -301,11 +327,27 @@ impl Recipe {
     }
 }
 
+/// An effect being read from the words of a recipe: its name, its
+/// `name=value` parameters and the time it is read at.
+type Reading<'a> = (&'a str, Vec<(&'a str, &'a str)>, Time);
+
+/// The error for a word that is not the name of an effect: a number is
+/// most likely a step of a pattern whose quotes the shell took away.
+fn unknown_effect(name: &str) -> Error {
+    if name.parse::<f64>().is_ok() {
+        Error::Syntax(format!(
+            "unknown effect '{name}': a pattern with spaces keeps its quotes, in a shell too (write 'rotate=\"0 40 80\"')"
+        ))
+    } else {
+        Error::UnknownEffect(name.to_owned())
+    }
+}
+
 impl FromStr for Recipe {
     type Err = Error;
 
     fn from_str(text: &str) -> Result<Recipe, Error> {
-        Recipe::from_words(&text.split_whitespace().collect::<Vec<_>>())
+        Recipe::from_words(&split_words(text))
     }
 }
 
@@ -325,7 +367,7 @@ pub(super) struct Params<'a> {
     effect: &'a str,
     pairs: &'a [(&'a str, &'a str)],
     read: Vec<bool>,
-    t: f64,
+    time: Time,
 }
 
 /// A number, or `a..b` taken at `t` between `a` and `b`: whole numbers
@@ -344,13 +386,35 @@ fn at_moment(value: &str, t: f64) -> Option<String> {
 }
 
 impl<'a> Params<'a> {
-    fn new(effect: &'a str, pairs: &'a [(&'a str, &'a str)], t: f64) -> Params<'a> {
+    fn new(effect: &'a str, pairs: &'a [(&'a str, &'a str)], time: Time) -> Params<'a> {
         Params {
             effect,
             pairs,
             read: vec![false; pairs.len()],
-            t,
+            time,
         }
+    }
+
+    /// What a parameter's text gives now: itself, or for a pattern the
+    /// step of the cycle (`None` for a rest, which is the default). Every
+    /// step of a pattern must be a value `valid` accepts, so that a
+    /// mistake in the third step is found now, not when it comes round.
+    fn step(
+        &self,
+        name: &str,
+        value: &str,
+        valid: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<String>, Error> {
+        if !Pattern::is_pattern(value) {
+            return Ok(Some(value.to_owned()));
+        }
+        let pattern: Pattern = value
+            .parse()
+            .map_err(|why| Error::Syntax(format!("{}: {name}: {why}", self.effect)))?;
+        if let Some(atom) = pattern.atoms().into_iter().find(|atom| !valid(atom)) {
+            return Err(self.bad(name, atom));
+        }
+        Ok(pattern.at(self.time.cycle).map(str::to_owned))
     }
 
     /// The last value given for a parameter, or the default.
@@ -366,8 +430,14 @@ impl<'a> Params<'a> {
     }
 
     pub(super) fn get<T: FromStr>(&mut self, name: &str, default: T) -> Result<T, Error> {
-        match self.text(name) {
-            Some(value) => at_moment(value, self.t)
+        let moment = self.time.moment;
+        let Some(value) = self.text(name) else {
+            return Ok(default);
+        };
+        let valid =
+            |text: &str| at_moment(text, moment).is_some_and(|now| now.parse::<T>().is_ok());
+        match self.step(name, value, &valid)? {
+            Some(text) => at_moment(&text, moment)
                 .and_then(|now| now.parse().ok())
                 .ok_or_else(|| self.bad(name, value)),
             None => Ok(default),
@@ -380,15 +450,18 @@ impl<'a> Params<'a> {
         name: &str,
         default: (T, T),
     ) -> Result<(T, T), Error> {
-        match self.text(name) {
-            Some(value) => value
-                .split_once(',')
-                .and_then(|(a, b)| {
-                    let a = at_moment(a, self.t)?.parse().ok()?;
-                    let b = at_moment(b, self.t)?.parse().ok()?;
-                    Some((a, b))
-                })
-                .ok_or_else(|| self.bad(name, value)),
+        let moment = self.time.moment;
+        let Some(value) = self.text(name) else {
+            return Ok(default);
+        };
+        let read = |text: &str| -> Option<(T, T)> {
+            let (a, b) = text.split_once(',')?;
+            let a = at_moment(a, moment)?.parse().ok()?;
+            let b = at_moment(b, moment)?.parse().ok()?;
+            Some((a, b))
+        };
+        match self.step(name, value, &|text| read(text).is_some())? {
+            Some(text) => read(&text).ok_or_else(|| self.bad(name, value)),
             None => Ok(default),
         }
     }
@@ -454,6 +527,116 @@ mod tests {
         assert_eq!(cache.len(), 1);
         apply("seed=4 grain + fade + vignette + grain", &mut cache);
         assert_eq!(cache.len(), 4);
+    }
+
+    /// The shift of the first step of a recipe read at a cycle.
+    fn shift_at(text: &str, cycle: f64) -> u32 {
+        let words = split_words(text);
+        match Recipe::from_words_at_time(&words, Time::new(0.0, cycle))
+            .unwrap()
+            .steps[0]
+        {
+            Effect::SliceShift(slice) => slice.shift.value(),
+            ref other => panic!("not a slice: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pattern_gives_a_step_of_the_cycle_to_a_parameter() {
+        let recipe = "seed=1 slice shift=\"10 20 30\"";
+        assert_eq!(
+            [0.0, 0.4, 0.7, 1.0, 1.5].map(|cycle| shift_at(recipe, cycle)),
+            [10, 20, 30, 10, 20]
+        );
+        // A rest is the default; steps can be ranges at the moment.
+        let default = SliceShift::default().shift.value();
+        assert_eq!(shift_at("slice shift=\"~ 5\"", 0.1), default);
+        assert_eq!(shift_at("slice shift=\"~ 5\"", 0.6), 5);
+        let words = split_words("slice shift=\"0..100\"");
+        let at = |moment| match Recipe::from_words_at_time(&words, Time::new(moment, 0.0))
+            .unwrap()
+            .steps[0]
+        {
+            Effect::SliceShift(slice) => slice.shift.value(),
+            _ => unreachable!(),
+        };
+        assert_eq!((at(0.0), at(0.5), at(1.0)), (0, 50, 100));
+    }
+
+    #[test]
+    fn a_pattern_gives_colours_booleans_and_pairs_too() {
+        let words = split_words("seed=1 slice split=\"true false\" + spin center=\"10,20 80,90\"");
+        let at = |cycle| Recipe::from_words_at_time(&words, Time::new(0.0, cycle)).unwrap();
+        assert!(matches!(at(0.0).steps[0], Effect::SliceShift(slice) if slice.split));
+        assert!(matches!(at(0.6).steps[0], Effect::SliceShift(slice) if !slice.split));
+        assert!(matches!(at(0.6).steps[1], Effect::Spin(spin)
+            if (spin.center.0.value(), spin.center.1.value()) == (80, 90)));
+        let leak = split_words("leak color=\"#ff0000 blue\"");
+        assert!(Recipe::from_words(&leak).is_ok());
+    }
+
+    #[test]
+    fn every_step_of_a_pattern_is_checked_when_it_is_read() {
+        // The third step of an alternation is wrong, and a cycle would
+        // not reach it for a while.
+        let words = split_words("slice shift=\"<10 20 oops>\"");
+        let err = Recipe::from_words(&words).unwrap_err().to_string();
+        assert!(err.contains("shift") && err.contains("oops"), "{err}");
+        let err = Recipe::from_words(&split_words("slice shift=\"10 [20\""))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("shift") && err.contains("missing"), "{err}");
+    }
+
+    #[test]
+    fn changes_before_an_effect_move_its_cycle_only() {
+        let fast = "seed=1 fast 2 slice shift=\"10 20 30\"";
+        assert_eq!(shift_at(fast, 0.2), 20, "twice as fast: cycle 0.4");
+        let slow = "slow 3 slice shift=\"10 20 30\"";
+        assert_eq!(shift_at(slow, 1.5), 20, "a third as fast: cycle 0.5");
+        let rev = "rev slice shift=\"10 20 30\"";
+        assert_eq!(
+            [0.1, 0.5, 0.9].map(|cycle| shift_at(rev, cycle)),
+            [30, 20, 10]
+        );
+        let every = "every 2 rev slice shift=\"10 20 30\"";
+        assert_eq!(shift_at(every, 0.1), 30, "cycle 0 is reversed");
+        assert_eq!(shift_at(every, 1.1), 10, "cycle 1 is not");
+        assert_eq!(shift_at(every, 2.1), 30, "cycle 2 is");
+        // The change belongs to the next effect only.
+        let two = split_words("seed=1 rev slice shift=\"10 20 30\" + slice shift=\"10 20 30\"");
+        let recipe = Recipe::from_words_at_time(&two, Time::new(0.0, 0.1)).unwrap();
+        let shifts: Vec<u32> = recipe
+            .steps
+            .iter()
+            .map(|step| match step {
+                Effect::SliceShift(slice) => slice.shift.value(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(shifts, [30, 10]);
+        // Several changes stack, in the order written.
+        assert_eq!(shift_at("fast 3 rev slice shift=\"10 20 30\"", 0.0), 30);
+    }
+
+    #[test]
+    fn a_shell_that_split_a_pattern_gets_a_hint_and_names_are_free() {
+        let err = Recipe::from_words(&["slice", "shift=10", "20", "30"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("quotes"), "{err}");
+        assert!(Recipe::from_words(&["fast"]).is_err());
+        for word in ["fast", "slow", "rev", "every"] {
+            assert!(!NAMES.contains(&word), "{word} is an effect");
+        }
+    }
+
+    #[test]
+    fn a_recipe_without_patterns_reads_as_it_always_did() {
+        let text = "seed=7 sort low=40 + slice slices=3 split=true + bend hits=2";
+        let plain: Recipe = text.parse().unwrap();
+        let timed = Recipe::from_words_at_time(&split_words(text), Time::new(0.0, 5.7)).unwrap();
+        assert_eq!(plain, timed);
     }
 
     #[test]
