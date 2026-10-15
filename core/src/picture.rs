@@ -4,8 +4,9 @@
 //! it may embed (1440×1080 on a Panasonic GX9, about 20 ms instead of 180 ms
 //! for the full image). Otherwise the RAW provides its embedded preview
 //! (1920×1440), or a full demosaic (about 0.6 s for 20 Mpx) for 100% zoom.
-//! The demosaiced RAW does not have the camera's look: it is darker and
-//! flatter than the JPEG, but shows the same detail. Every picture is
+//! The demosaiced RAW does not have the camera's look, but it takes the
+//! exposure of the camera's preview and keeps its colours and highlights
+//! (see `develop`); it shows the same detail as the JPEG. Every picture is
 //! turned upright according to the EXIF orientation of its file.
 //!
 //! Previews are read from the disk without the rest of the file: its head
@@ -18,9 +19,10 @@ use std::path::{Path, PathBuf};
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageFormat};
 use rawler::decoders::{Decoder, RawDecodeParams};
-use rawler::imgop::develop::RawDevelop;
+use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use rawler::rawsource::RawSource;
 
+use crate::develop;
 use crate::exif::Head;
 use crate::files::{read_head, read_range};
 use crate::formats::{jpeg, rw2, tiff};
@@ -247,16 +249,64 @@ impl<'a> Raw<'a> {
         Ok(image.map(|image| self.upright(image, Origin::RawPreview)))
     }
 
+    /// The RAW demosaiced at full size, finished for the screen (see
+    /// [`develop`](crate::develop)): the white balance and the camera matrix
+    /// applied here without rawler's squashing of bright colours, the
+    /// exposure of the camera's own preview, colours kept inside the gamut,
+    /// highlights rolled off, and dithered 8 bits.
     fn develop(&self) -> Result<Picture, Error> {
         let raw_image = self
             .decoder
             .raw_image(&self.source, &RawDecodeParams::default(), false)
             .map_err(|err| self.error(err))?;
-        let image = RawDevelop::default()
+        // The steps up to the colours of the camera, where the white level
+        // of the sensor is 1; the rest is done in `develop`.
+        let mut camera = RawDevelop::default();
+        camera.steps.retain(|step| {
+            !matches!(
+                step,
+                ProcessingStep::WhiteBalance | ProcessingStep::Calibrate | ProcessingStep::SRgb
+            )
+        });
+        let developed = camera
             .develop_intermediate(&raw_image)
-            .map_err(|err| self.error(err))?
-            .to_dynamic_image()
-            .ok_or_else(|| self.error("cannot convert the developed image".into()))?;
+            .map_err(|err| self.error(err))?;
+        let image = match (developed, develop::camera_matrix(&raw_image)) {
+            (Intermediate::ThreeColor(mut pixels), Some(matrix)) => {
+                // Some old files have no white balance: no correction then.
+                let [r, g, b, _] = raw_image.wb_coeffs;
+                let white_balance = if r.is_nan() { [1.0; 3] } else { [r, g, b] };
+                let clipped = develop::ClipMap::new(&pixels.data, pixels.width, pixels.height);
+                develop::suppress_false_colour(&mut pixels.data, pixels.width, pixels.height);
+                let linear = develop::to_linear(&pixels.data, white_balance, matrix);
+                let preview = self
+                    .decoder
+                    .preview_image(&self.source, &RawDecodeParams::default())
+                    .ok()
+                    .flatten();
+                let gain = preview
+                    .as_ref()
+                    .and_then(|preview| develop::gain_for(&linear, &preview.to_rgb8()))
+                    .unwrap_or(1.0);
+                let vividness = preview.as_ref().map_or(0.0, |preview| {
+                    develop::vividness_for(&linear, gain, &preview.to_rgb8())
+                });
+                DynamicImage::ImageRgb8(develop::finish(
+                    &linear,
+                    pixels.width,
+                    pixels.height,
+                    gain,
+                    vividness,
+                    Some(&clipped),
+                ))
+            }
+            // A monochrome or four-colour sensor: the plain development.
+            _ => RawDevelop::default()
+                .develop_intermediate(&raw_image)
+                .map_err(|err| self.error(err))?
+                .to_dynamic_image()
+                .ok_or_else(|| self.error("cannot convert the developed image".into()))?,
+        };
         Ok(self.upright(image, Origin::RawDevelop))
     }
 

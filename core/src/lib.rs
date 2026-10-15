@@ -5,6 +5,7 @@ pub mod bursts;
 pub mod cache;
 pub mod cameras;
 pub mod debanding;
+pub mod develop;
 pub mod dng;
 pub mod exif;
 mod files;
