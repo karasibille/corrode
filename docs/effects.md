@@ -92,6 +92,19 @@ fade lift=20
 - A recipe that is not valid, or that is half typed, does not clear the picture: the last good result stays and the status line says what is wrong. A file that is empty for a moment, as when an editor saves, is ignored.
 - A parameter written as a range, `rotate=-70..70`, moves on its own: the ranges go from one end to the other and back, slow at both ends, in 3 seconds, and a new picture is made as soon as the last one is done, about ten a second for a light recipe. Only the effects from the first one that moves are made again: the ones before it are kept, so a range in the last effect costs one effect, not the whole recipe.
 - `space` pauses and resumes, `[` and `]` slow down and speed up, `j` makes the seed move on at each frame, so that what is drawn at random shakes (the waves of `liquid` then change at each picture, which is rarely what you want, so it starts off).
+- A parameter written between quotes is a **pattern** that changes from step to step, as in [Strudel](https://strudel.cc). A cycle lasts as long as a trip of the ranges does (3 seconds to begin with, `[` and `]` change it). They play in `corrode live` and in `corrode gif`; `corrode effect` makes a single picture and shows the first step.
+
+  ```
+  slice shift="10 80 160"    # three steps in a cycle
+  spin angle="5 [10 40]"     # the second step holds two, twice as short
+  grain strength="20 ~ 60"   # ~ is a rest: the parameter's default
+  leak color="<red blue>"    # one value a cycle, in turn
+  drag length="10 40*2 80/2" # a step twice as fast, a step twice as slow
+  every 4 rev fast 2 spin angle="5 20"   # changes before an effect
+  ```
+
+  A step is any text the parameter reads: a number, a colour, `true`, `lighten`, a pair `10,50` or a range `0..40`, which then moves as usual. Every step is checked when the file is read, so a mistake in the third step shows at once. `fast 2` and `slow 2` make the effect's cycles pass twice as fast or as slow, `rev` runs each cycle backwards and `every 4 rev` does it on every 4th cycle, starting with the first; they change only the effect written after them, and stack. From Strudel, `!`, `@`, `?`, `|`, `{ }` and Euclid rhythms are not read yet, nor `jux`, which needs two channels.
+- In a shell, quotes are the shell's own: write `'rotate="0 40 80"'` so that the pattern reaches `corrode` in one word, or the `40` is taken for an effect and the error says so. In a recipe file there is nothing to do. `corrode gif` plays one cycle over its frames, and its way back plays the frames in reverse, so the patterns run backwards there: `--no-boomerang` keeps them forward.
 - `s` applies the recipe, as it is on screen (at the moment where a moving recipe is paused or passing), to the full-size picture (a RAW is developed first) and saves it next to the picture as `photo-live.jpg`, then `photo-live-2.jpg`: nothing is overwritten.
 - `g` makes a GIF the way [`corrode gif`](../README.md#gallery) does, from the ranges of the recipe, as `photo-live.gif`.
 - `q` or `Esc` quits.
