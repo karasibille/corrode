@@ -29,3 +29,4 @@ remap | remap, a hue sent elsewhere | remap map=blue:orange,green:red saturation
 spin | spin, a turning smear | spin angle=14
 spin-ghosts | spin, a few ghosts | spin angle=24 steps=5 center=30,60
 chain | three effects in a row | sort low=40 high=220 + slice slices=12 split=true + grain
+prism | prism, light split into a spectrum | prism kind=radial center=100,100 position=15 size=80 hue=260 range=-350 white=40 strength=70

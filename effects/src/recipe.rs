@@ -29,6 +29,7 @@ use super::glitch::{ChannelSplit, PixelStretch, SliceShift};
 use super::grade::{FalseColor, OnePoint, Tritone};
 use super::jpeg::{Databend, GenerationLoss};
 use super::print::{Dither, Duotone, Scanlines};
+use super::prism::Prism;
 use super::remap::Remap;
 use super::sort::PixelSort;
 use super::spin::Spin;
@@ -141,6 +142,7 @@ effects! {
     FalseColor(FalseColor),
     Spin(Spin),
     Remap(Remap),
+    Prism(Prism),
 }
 
 /// One parameter of an effect, as the documentation shows it.
@@ -395,7 +397,7 @@ mod tests {
         for name in NAMES {
             assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), *name);
         }
-        assert_eq!(NAMES.len(), 23);
+        assert_eq!(NAMES.len(), 24);
     }
 
     #[test]
