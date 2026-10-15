@@ -526,6 +526,157 @@ pub fn leak(image: &RgbImage, params: Leak, seed: u64) -> RgbImage {
     lit
 }
 
+/// Where the first streak of the light streaks is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreakPosition {
+    /// Anywhere, drawn from the seed.
+    #[default]
+    Random,
+    /// The middle of the streak, in percent of the width.
+    At(Percent),
+}
+
+impl std::str::FromStr for StreakPosition {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<StreakPosition, String> {
+        match text {
+            "random" => Ok(StreakPosition::Random),
+            other => other
+                .parse::<Percent>()
+                .map(StreakPosition::At)
+                .map_err(|_| format!("'{other}' is not a position (random, or 0 to 100)")),
+        }
+    }
+}
+
+impl std::fmt::Display for StreakPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreakPosition::Random => f.write_str("random"),
+            StreakPosition::At(percent) => write!(f, "{percent}"),
+        }
+    }
+}
+
+/// Parameters of the light streaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Streaks {
+    /// Colour of the streaks where they are half bright.
+    pub color: Color,
+    /// How strong the streaks are, 0 to 100.
+    pub strength: Percent,
+    /// How many streaks, 1 to 8.
+    pub count: u8,
+    /// How wide a streak is, 0 to 100 of the width.
+    pub width: Percent,
+    /// How far the hue goes either way, in degrees, between the dim edge
+    /// of a streak and its bright core.
+    pub spread: u16,
+    /// How much the streaks wander and fade from top to bottom, 0 to 100.
+    pub wobble: Percent,
+    /// How soft the edge of a streak is where the light stops short, 0 to
+    /// 100: 0 is a cut, 100 fades over half of the width of the streak.
+    pub softness: Percent,
+    /// Where the first streak is; the others are drawn from the seed.
+    pub position: StreakPosition,
+}
+
+impl Default for Streaks {
+    fn default() -> Streaks {
+        Streaks {
+            color: Color(Rgb([255, 58, 16])),
+            strength: Percent::new(85),
+            count: 3,
+            width: Percent::new(28),
+            spread: 20,
+            wobble: Percent::new(50),
+            softness: Percent::new(40),
+            position: StreakPosition::Random,
+        }
+    }
+}
+
+/// Size, for a picture 1000 pixels wide, of the patches along which the
+/// streaks wander.
+const STREAK_PATCH: u32 = 400;
+
+/// Bands of light across the whole height, as film in a camera that was
+/// not shut tight: a soft rise of light, a hard edge on one side, red at
+/// the dim border and yellow towards the core, screened over the picture.
+/// The seed draws where they are and which side is hard.
+pub fn streaks(image: &RgbImage, params: Streaks, seed: u64) -> RgbImage {
+    let (width, height) = (image.width() as f32, image.height() as f32);
+    let mut random = Random::new(seed);
+    let wide = width * params.width.fraction().max(0.01);
+    // For each streak: where it starts, how wide it is, and whether the
+    // hard edge is on the right.
+    let bands: Vec<(f32, f32, bool)> = (0..params.count.clamp(1, 8))
+        .enumerate()
+        .map(|(rank, _)| {
+            let drawn = width * random.below(1001) as f32 / 1000.0;
+            let centre = match (rank, params.position) {
+                (0, StreakPosition::At(percent)) => width * percent.fraction(),
+                _ => drawn,
+            };
+            let size = wide * (0.6 + random.below(801) as f32 / 1000.0);
+            (centre - size / 2.0, size, random.once_in(2))
+        })
+        .collect();
+    let wobble = params.wobble.fraction();
+    let strength = params.strength.fraction();
+    let spread = f32::from(params.spread);
+    let fade_out = params.softness.fraction() * 0.5;
+    let [hue, saturation, value] =
+        to_hsv(params.color.0.0.map(|channel| f32::from(channel) / 255.0));
+    let cell = Size::new(STREAK_PATCH).on_f32(image.width()).max(1.0);
+    let rows = (height / cell).ceil() as usize + 2;
+    // Along each streak, how bright it is and how far its edge wanders.
+    let fade = Noise::new(seed.wrapping_add(0xFADE), rows, 1);
+    let sway = Noise::new(seed.wrapping_add(0x5AAA), rows, 1);
+    let mut lit = image.clone();
+    parallel::for_each_pixel(&mut lit, |x, y, pixel| {
+        let along = y as f32 / cell;
+        let brightness = 1.0 + (fade.at(along, 0.0) - 0.5) * 2.0 * wobble * 0.8;
+        let moved = (sway.at(along, 0.0) - 0.5) * 2.0 * wobble * wide * 0.3;
+        let mut light = 0.0f32;
+        for &(start, size, hard_right) in &bands {
+            let mut u = (x as f32 - start - moved) / size;
+            if !hard_right {
+                u = 1.0 - u;
+            }
+            if (0.0..1.0).contains(&u) {
+                // Rises smoothly across the streak, up to its edge.
+                light += u * u * (3.0 - 2.0 * u);
+            } else if u >= 1.0 && u < 1.0 + fade_out {
+                // Past the edge, it fades over a short stretch.
+                let gone = (u - 1.0) / fade_out;
+                light += 1.0 - gone * gone * (3.0 - 2.0 * gone);
+            }
+        }
+        let light = (light * brightness).clamp(0.0, 1.0);
+        if light <= 0.0 {
+            return;
+        }
+        // Dim: the hue goes one way; bright: the other, and towards white.
+        let core = ((light - 0.75) / 0.25).clamp(0.0, 1.0);
+        let color = from_hsv([
+            hue + (2.0 * light - 1.0) * spread,
+            saturation * (1.0 - core * 0.3),
+            value,
+        ]);
+        for channel in 0..3 {
+            let value = Blend::Screen.apply(
+                f32::from(pixel[channel]),
+                color[channel] * 255.0,
+                light * strength,
+            );
+            pixel[channel] = value.round().clamp(0.0, 255.0) as u8;
+        }
+    });
+    lit
+}
+
 /// Parameters of the bloom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bloom {
@@ -843,6 +994,65 @@ impl Spec for Leak {
     }
 }
 
+impl Spec for Streaks {
+    const NAME: &'static str = "streaks";
+    const PARAMS: &'static [(&'static str, &'static str)] = &[
+        ("color", "colour of the streaks where they are half bright"),
+        ("strength", "how strong the streaks are, 0 to 100"),
+        ("count", "how many streaks, 1 to 8"),
+        ("width", "how wide a streak is, 0 to 100 of the width"),
+        (
+            "spread",
+            "how far the hue goes either way between the dim edge and the bright core, in degrees",
+        ),
+        (
+            "wobble",
+            "how much the streaks wander and fade from top to bottom, 0 to 100",
+        ),
+        (
+            "softness",
+            "how soft the edge is where the light stops short, 0 for a cut, 0 to 100",
+        ),
+        (
+            "position",
+            "`random`, or where the first streak is, 0 to 100 of the width (the others stay drawn)",
+        ),
+    ];
+
+    fn parse(params: &mut Params) -> Result<Streaks, Error> {
+        let d = Streaks::default();
+        Ok(Streaks {
+            color: params.get("color", d.color)?,
+            strength: params.get("strength", d.strength)?,
+            count: params.get("count", d.count)?,
+            width: params.get("width", d.width)?,
+            spread: params.get("spread", d.spread)?,
+            wobble: params.get("wobble", d.wobble)?,
+            softness: params.get("softness", d.softness)?,
+            position: params.get("position", d.position)?,
+        })
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " color={} strength={} count={} width={} spread={} wobble={} softness={} position={}",
+            self.color,
+            self.strength,
+            self.count,
+            self.width,
+            self.spread,
+            self.wobble,
+            self.softness,
+            self.position
+        )
+    }
+
+    fn apply(&self, image: &RgbImage, seed: u64) -> Result<RgbImage, Error> {
+        Ok(streaks(image, *self, seed))
+    }
+}
+
 impl Spec for Bloom {
     const NAME: &'static str = "bloom";
     const PARAMS: &'static [(&'static str, &'static str)] = &[
@@ -1097,6 +1307,84 @@ mod tests {
             .iter()
             .fold((f32::MAX, f32::MIN), |(l, h), &r| (l.min(r), h.max(r)));
         assert!(high - low > 0.1, "{low} {high}");
+    }
+
+    #[test]
+    fn streaks_light_whole_columns_and_leave_the_rest() {
+        let flat = RgbImage::from_pixel(300, 100, Rgb([40; 3]));
+        let params = Streaks {
+            count: 2,
+            width: Percent::new(10),
+            wobble: Percent::new(0),
+            strength: Percent::new(100),
+            softness: Percent::new(0),
+            ..Streaks::default()
+        };
+        let lit = streaks(&flat, params, 3);
+        assert_eq!(streaks(&flat, params, 3), lit, "the same for a seed");
+        assert_ne!(streaks(&flat, params, 4), lit);
+        // Without wobble a column is lit the same from top to bottom, and
+        // most columns stay as they were.
+        let columns: Vec<bool> = (0..300)
+            .map(|x| lit.get_pixel(x, 0) != &Rgb([40; 3]))
+            .collect();
+        assert!(columns.iter().any(|&on| on));
+        assert!(columns.iter().filter(|&&on| !on).count() > 150);
+        for x in 0..300 {
+            assert_eq!(lit.get_pixel(x, 0), lit.get_pixel(x, 99), "column {x}");
+        }
+    }
+
+    #[test]
+    fn the_first_streak_can_be_put_where_asked() {
+        let flat = RgbImage::from_pixel(300, 10, Rgb([0; 3]));
+        let at = |position| {
+            let params = Streaks {
+                count: 1,
+                width: Percent::new(10),
+                wobble: Percent::new(0),
+                strength: Percent::new(100),
+                position,
+                ..Streaks::default()
+            };
+            let image = streaks(&flat, params, 3);
+            let lit: Vec<u32> = (0..300).filter(|&x| image.get_pixel(x, 0)[0] > 0).collect();
+            (lit[0], lit[lit.len() - 1])
+        };
+        let (first, last) = at(StreakPosition::At(Percent::new(10)));
+        assert!(first < 30 && last < 60, "{first} {last}");
+        let (first, _) = at(StreakPosition::At(Percent::new(90)));
+        assert!(first > 240, "{first}");
+        assert_eq!("random".parse(), Ok(StreakPosition::Random));
+        assert!("far".parse::<StreakPosition>().is_err());
+    }
+
+    #[test]
+    fn a_soft_edge_fades_where_a_cut_one_stops() {
+        let flat = RgbImage::from_pixel(300, 10, Rgb([0; 3]));
+        let streak = Streaks {
+            count: 1,
+            width: Percent::new(30),
+            wobble: Percent::new(0),
+            strength: Percent::new(100),
+            ..Streaks::default()
+        };
+        let lit = |softness| {
+            let image = streaks(
+                &flat,
+                Streaks {
+                    softness: Percent::new(softness),
+                    ..streak
+                },
+                5,
+            );
+            // Columns with some light but less than the brightest of the streak.
+            let brightest = (0..300).map(|x| image.get_pixel(x, 0)[0]).max().unwrap();
+            (0..300)
+                .filter(|&x| (1..brightest / 2).contains(&image.get_pixel(x, 0)[0]))
+                .count()
+        };
+        assert!(lit(100) > lit(0), "{} {}", lit(100), lit(0));
     }
 
     #[test]

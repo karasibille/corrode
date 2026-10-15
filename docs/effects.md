@@ -36,6 +36,7 @@ corrode effect docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb ro
 - `fade`: the look of an old print, with the blacks lifted, the colours washed and a warm tint.
 - `vignette`: the corners get darker.
 - `leak`: a coloured glow comes in from an edge, as if light had reached the film. By default it is a point on an edge chosen by the seed; `edge=left` (or `right`, `top`, `bottom`) lights a whole side. `spread=35` lets the hue wander round the colour and `wobble=70` makes the glow uneven in reach and strength, so that it is not the same everywhere.
+- `streaks`: bands of light across the whole height, as film in a camera that was not shut tight: soft on one side, a hard edge on the other, red at the dim border and yellower towards the core. `count`, `width`, `color`, `spread` (how far the hue goes) and `wobble` (how much they wander from top to bottom) and `softness` (how soft the edge is where the light stops) shape them, and `position=0` puts the first one on the left edge (100 on the right); the seed draws where they are. `leak edge=right color=ffffff size=14` adds the blown white edge.
 - `bloom`: the brightest lights glow, with a halo around them.
 
 **Distortion**: the picture is moved, not recoloured.

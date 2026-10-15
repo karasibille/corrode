@@ -18,6 +18,7 @@ grain | film grain | grain
 fade | faded print | fade
 vignette | vignette | vignette
 leak | light leak | leak
+streaks | light streaks | streaks count=1 position=0 wobble=15
 bloom | bloom | bloom
 liquid | liquid distortion | liquid
 falsecolor | false colour (red and blue swapped) | falsecolor

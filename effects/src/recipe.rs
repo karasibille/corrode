@@ -24,7 +24,7 @@ use std::str::FromStr;
 use image::RgbImage;
 
 use super::Error;
-use super::film::{Aberration, Bloom, Drag, Fade, Grain, Leak, Vignette};
+use super::film::{Aberration, Bloom, Drag, Fade, Grain, Leak, Streaks, Vignette};
 use super::glitch::{ChannelSplit, PixelStretch, SliceShift};
 use super::grade::{FalseColor, OnePoint, Tritone};
 use super::jpeg::{Databend, GenerationLoss};
@@ -133,6 +133,7 @@ effects! {
     Fade(Fade),
     Vignette(Vignette),
     Leak(Leak),
+    Streaks(Streaks),
     Bloom(Bloom),
     Liquid(Liquid),
     OnePoint(OnePoint),
@@ -394,7 +395,7 @@ mod tests {
         for name in NAMES {
             assert_eq!(name.parse::<Recipe>().unwrap().steps[0].name(), *name);
         }
-        assert_eq!(NAMES.len(), 22);
+        assert_eq!(NAMES.len(), 23);
     }
 
     #[test]
