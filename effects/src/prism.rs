@@ -11,7 +11,7 @@ use super::Error;
 use super::colour::from_hsv;
 use super::parallel;
 use super::recipe::{Params, Spec};
-use super::units::{Percent, Size};
+use super::units::{Percent, Size, long_side};
 use super::warp::Noise;
 
 /// Which way the spectrum runs.
@@ -110,7 +110,7 @@ pub fn prism(image: &RgbImage, params: Prism, seed: u64) -> RgbImage {
         params.center.1.fraction() * height,
     );
     let wobble = params.wobble.fraction();
-    let cell = Size::new(PRISM_PATCH).on_f32(image.width()).max(1.0);
+    let cell = Size::new(PRISM_PATCH).on_f32(long_side(image)).max(1.0);
     let lattice = |seed: u64| {
         Noise::new(
             seed,

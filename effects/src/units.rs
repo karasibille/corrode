@@ -5,8 +5,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-/// The width the sizes of the parameters are given for.
-pub const REFERENCE_WIDTH: u32 = 1000;
+/// The length of the longer side of a picture the sizes of the
+/// parameters are given for.
+pub const REFERENCE_SIDE: u32 = 1000;
 
 /// A share of something, 0 to 100 %.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,8 +46,8 @@ impl fmt::Display for Percent {
     }
 }
 
-/// A size in pixels for a picture [`REFERENCE_WIDTH`] pixels wide, which
-/// scales with the picture it is used on, so that a recipe looks the
+/// A size in pixels for a picture whose longer side is [`REFERENCE_SIDE`]
+/// pixels, which scales with the picture it is used on, so that a recipe looks the
 /// same on a preview and on the full-size picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Size(u32);
@@ -60,14 +61,15 @@ impl Size {
         self.0
     }
 
-    /// The size on a picture of this width, in its pixels.
-    pub fn on(self, width: u32) -> u32 {
-        self.on_f32(width).round() as u32
+    /// The size on a picture whose longer side is this long, in its
+    /// pixels.
+    pub fn on(self, side: u32) -> u32 {
+        self.on_f32(side).round() as u32
     }
 
     /// The same, not rounded.
-    pub fn on_f32(self, width: u32) -> f32 {
-        self.0 as f32 * scale_of(width)
+    pub fn on_f32(self, side: u32) -> f32 {
+        self.0 as f32 * scale_of(side)
     }
 }
 
@@ -116,15 +118,33 @@ impl fmt::Display for Point {
     }
 }
 
-/// How many actual pixels a reference pixel is on a picture of this
-/// width.
-pub fn scale_of(width: u32) -> f32 {
-    width as f32 / REFERENCE_WIDTH as f32
+/// How many actual pixels a reference pixel is on a picture whose longer
+/// side is this long.
+pub fn scale_of(side: u32) -> f32 {
+    side as f32 / REFERENCE_SIDE as f32
+}
+
+/// The longer side of a picture: what the sizes of the parameters scale
+/// with, so that a recipe looks the same on a portrait and on a landscape.
+pub fn long_side(image: &image::RgbImage) -> u32 {
+    image.width().max(image.height())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_size_follows_the_longer_side() {
+        let (landscape, portrait) = (
+            image::RgbImage::new(500, 200),
+            image::RgbImage::new(200, 500),
+        );
+        assert_eq!(long_side(&landscape), 500);
+        assert_eq!(long_side(&portrait), 500);
+        assert_eq!(Size::new(40).on(long_side(&portrait)), 20);
+        assert_eq!(Size::new(40).on(long_side(&landscape)), 20);
+    }
 
     #[test]
     fn percentages_stay_within_bounds() {

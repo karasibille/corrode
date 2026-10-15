@@ -1,7 +1,7 @@
 //! The look of print and screens: pictures reduced to dots of ink, to
 //! two inks, or seen through the lines of a tube.
 //!
-//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide, as in the
+//! Sizes are in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side, as in the
 //! glitch effects.
 
 use std::fmt;
@@ -14,7 +14,7 @@ use super::colour::Color;
 use super::parallel;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;
-use super::units::{Percent, Size};
+use super::units::{Percent, Size, long_side};
 
 /// How a picture is reduced to black and white dots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -53,7 +53,7 @@ impl std::fmt::Display for DitherMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dither {
     pub method: DitherMethod,
-    /// Size of a dot, in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide:
+    /// Size of a dot, in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side:
     /// the picture is reduced by it before the dots are placed, and
     /// each dot is drawn that big.
     pub size: Size,
@@ -78,7 +78,7 @@ pub fn dither(image: &RgbImage, params: Dither) -> RgbImage {
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let dot = params.size.on(width).max(1);
+    let dot = params.size.on(long_side(image)).max(1);
     let (small_width, small_height) = ((width / dot).max(1), (height / dot).max(1));
     let small = if dot > 1 {
         DynamicImage::ImageRgb8(image.clone())
@@ -190,7 +190,7 @@ pub fn duotone(image: &RgbImage, params: Duotone) -> RgbImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scanlines {
     /// Rows from one line to the next, in pixels for a picture
-    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    /// [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side.
     pub period: Size,
     /// Rows a line is thick, in the same pixels.
     pub thickness: Size,
@@ -210,9 +210,9 @@ impl Default for Scanlines {
 
 /// Darkens rows at a regular period, as the lines of a tube screen.
 pub fn scanlines(image: &RgbImage, params: Scanlines) -> RgbImage {
-    let width = image.width();
-    let period = params.period.on(width).max(1);
-    let thickness = params.thickness.on(width).clamp(1, period);
+    let side = long_side(image);
+    let period = params.period.on(side).max(1);
+    let thickness = params.thickness.on(side).clamp(1, period);
     let keep = 1.0 - params.strength.fraction();
     let mut lined = image.clone();
     parallel::for_each_pixel(&mut lined, |_, y, pixel| {
@@ -409,6 +409,24 @@ mod tests {
         );
         for y in 0..12 {
             let expected = if y % 4 == 0 { 100 } else { 200 };
+            assert_eq!(lined.get_pixel(0, y)[0], expected, "row {y}");
+        }
+    }
+
+    #[test]
+    fn sizes_follow_the_longer_side_of_a_portrait() {
+        // 100 wide and 500 high: the longer side is 500, half of the 1000
+        // the sizes are given for, so a period of 4 is 2 rows.
+        let lined = scanlines(
+            &grey(200, 100, 500),
+            Scanlines {
+                period: Size::new(4),
+                thickness: Size::new(1),
+                strength: Percent::new(50),
+            },
+        );
+        for y in 0..8 {
+            let expected = if y % 2 == 0 { 100 } else { 200 };
             assert_eq!(lined.get_pixel(0, y)[0], expected, "row {y}");
         }
     }

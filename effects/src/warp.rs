@@ -1,7 +1,7 @@
 //! The picture seen through moving water: a field of smooth noise pushes
 //! every pixel a little way, more here, less there.
 //!
-//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide, as in the
+//! Sizes are in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side, as in the
 //! glitch effects.
 
 use std::fmt;
@@ -13,13 +13,13 @@ use super::film::bilinear;
 use super::parallel;
 use super::random::Random;
 use super::recipe::{Params, Spec};
-use super::units::Size;
+use super::units::{Size, long_side};
 
 /// Parameters of the liquid distortion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Liquid {
     /// How far a pixel can be pushed, in pixels for a picture
-    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    /// [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side.
     pub amplitude: Size,
     /// Size of the waves, in the same pixels: the distance over which
     /// the push changes.
@@ -50,9 +50,10 @@ pub fn liquid(image: &RgbImage, params: Liquid, seed: u64) -> RgbImage {
     if width == 0 || height == 0 || params.scale.value() == 0 {
         return image.clone();
     }
-    let amplitude = params.amplitude.on_f32(width);
-    let wave = params.scale.on_f32(width);
-    let drift = params.drift.on_f32(width);
+    let side = long_side(image);
+    let amplitude = params.amplitude.on_f32(side);
+    let wave = params.scale.on_f32(side);
+    let drift = params.drift.on_f32(side);
     let octaves = params.octaves.clamp(1, 6);
     // One field for each direction, lattices large enough for the drift.
     let cells = ((width as f32 + drift) / wave).ceil() as usize + 2;

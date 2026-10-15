@@ -2,7 +2,7 @@
 //! a lens that does not keep the colours together, grain, a faded print,
 //! dark corners, a leak of light, lights that glow.
 //!
-//! Sizes are in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide, as in the
+//! Sizes are in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side, as in the
 //! glitch effects. The blurs are made on a reduced copy of the picture,
 //! which they hide anyway, and blended back at full size.
 
@@ -17,12 +17,12 @@ use super::parallel;
 use super::random::Random;
 use super::recipe::{Params, Spec};
 use super::sort::brightness;
-use super::units::{Percent, Size};
+use super::units::{Percent, Size, long_side};
 use super::warp::Noise;
 
-/// Width the blurs are made at: enough for a blur, a fraction of the
+/// Longer side the blurs are made at: enough for a blur, a fraction of the
 /// work.
-const BLUR_WIDTH: u32 = 1000;
+const BLUR_SIDE: u32 = 1000;
 /// Samples along a smear at most: two pixels apart at the longest, which
 /// the blending hides.
 const SMEAR_SAMPLES: usize = 32;
@@ -118,7 +118,7 @@ impl std::fmt::Display for DragKind {
 pub struct Drag {
     pub kind: DragKind,
     /// How far the smear goes, in pixels for a picture
-    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide: the length of a motion smear, or how far
+    /// [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side: the length of a motion smear, or how far
     /// the edge of the picture moves in a zoom or an arc smear.
     pub length: Size,
     /// Direction of a motion smear, in degrees, 0 being to the right
@@ -153,7 +153,7 @@ pub fn drag(image: &RgbImage, params: Drag) -> RgbImage {
         return image.clone();
     }
     let small = reduced(image);
-    let length = params.length.on_f32(small.width());
+    let length = params.length.on_f32(long_side(&small));
     let samples = (length.ceil() as usize).clamp(1, SMEAR_SAMPLES);
     let (sw, sh) = (small.width() as f32, small.height() as f32);
     let cx = params.center.0.fraction() * (sw - 1.0);
@@ -236,7 +236,7 @@ pub fn aberration(image: &RgbImage, params: Aberration) -> RgbImage {
 pub struct Grain {
     /// How strong the grain is, 0 to 100.
     pub strength: Percent,
-    /// Size of a grain, in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    /// Size of a grain, in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side.
     pub size: Size,
     /// Whether the grain colours the picture, or only lightens and
     /// darkens it.
@@ -260,7 +260,7 @@ pub fn grain(image: &RgbImage, params: Grain, seed: u64) -> RgbImage {
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let dot = params.size.on(width).max(1);
+    let dot = params.size.on(long_side(image)).max(1);
     let (gw, gh) = (width.div_ceil(dot), height.div_ceil(dot));
     let mut random = Random::new(seed);
     // Noise of -1 to 1 per grain, one value or three.
@@ -445,7 +445,7 @@ impl Default for Leak {
     }
 }
 
-/// Size, for a picture 1000 pixels wide, of the patches of the uneven
+/// Size, for a picture whose longer side is 1000 pixels, of the patches of the uneven
 /// reach and strength of a leak, and of its patches of hue.
 const LEAK_PATCH: u32 = 200;
 const LEAK_TINT_PATCH: u32 = 350;
@@ -478,7 +478,7 @@ pub fn leak(image: &RgbImage, params: Leak, seed: u64) -> RgbImage {
     // drawn above stays the one a leak always had.
     let patches = (wobble > 0.0 || spread > 0.0).then(|| {
         let lattice = |patch: u32, seed: u64| {
-            let cell = Size::new(patch).on_f32(image.width()).max(1.0);
+            let cell = Size::new(patch).on_f32(long_side(image)).max(1.0);
             let noise = Noise::new(
                 seed,
                 (width / cell).ceil() as usize + 2,
@@ -597,7 +597,7 @@ impl Default for Streaks {
     }
 }
 
-/// Size, for a picture 1000 pixels wide, of the patches along which the
+/// Size, for a picture whose longer side is 1000 pixels, of the patches along which the
 /// streaks wander.
 const STREAK_PATCH: u32 = 400;
 
@@ -629,7 +629,7 @@ pub fn streaks(image: &RgbImage, params: Streaks, seed: u64) -> RgbImage {
     let fade_out = params.softness.fraction() * 0.5;
     let [hue, saturation, value] =
         to_hsv(params.color.0.0.map(|channel| f32::from(channel) / 255.0));
-    let cell = Size::new(STREAK_PATCH).on_f32(image.width()).max(1.0);
+    let cell = Size::new(STREAK_PATCH).on_f32(long_side(image)).max(1.0);
     let rows = (height / cell).ceil() as usize + 2;
     // Along each streak, how bright it is and how far its edge wanders.
     let fade = Noise::new(seed.wrapping_add(0xFADE), rows, 1);
@@ -683,7 +683,7 @@ pub struct Bloom {
     /// Brightness, 0 to 255, above which a light glows.
     pub threshold: u8,
     /// How far the glow spreads, in pixels for a picture
-    /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    /// [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side.
     pub radius: Size,
     /// How bright the glow is, 0 to 100.
     pub strength: Percent,
@@ -719,7 +719,7 @@ pub fn bloom(image: &RgbImage, params: Bloom) -> RgbImage {
             Rgb([0, 0, 0])
         }
     });
-    let sigma = (params.radius.on_f32(small.width()) / 2.0).max(0.5);
+    let sigma = (params.radius.on_f32(long_side(&small)) / 2.0).max(0.5);
     let glow = image::imageops::fast_blur(&lights, sigma);
     blend_over(
         image,
@@ -729,15 +729,20 @@ pub fn bloom(image: &RgbImage, params: Bloom) -> RgbImage {
     )
 }
 
-/// A copy of the picture no wider than [`BLUR_WIDTH`].
+/// A copy of the picture whose longer side is at most [`BLUR_SIDE`].
 fn reduced(image: &RgbImage) -> RgbImage {
-    if image.width() <= BLUR_WIDTH {
+    let side = long_side(image);
+    if side <= BLUR_SIDE {
         return image.clone();
     }
-    let height =
-        (u64::from(image.height()) * u64::from(BLUR_WIDTH) / u64::from(image.width())) as u32;
+    let reduce =
+        |length: u32| (u64::from(length) * u64::from(BLUR_SIDE) / u64::from(side)).max(1) as u32;
     DynamicImage::ImageRgb8(image.clone())
-        .resize_exact(BLUR_WIDTH, height.max(1), FilterType::Triangle)
+        .resize_exact(
+            reduce(image.width()),
+            reduce(image.height()),
+            FilterType::Triangle,
+        )
         .to_rgb8()
 }
 

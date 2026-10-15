@@ -8,7 +8,7 @@ The effects turn a picture into something else on purpose: the wear of a compres
 corrode effect docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb rotate=120
 ```
 
-`corrode effects` lists the effects and `corrode effects <effect>` tells the parameters of one, with their defaults. Sizes are in pixels for a picture 1000 pixels wide and grow with the picture, so a recipe looks the same on a preview and on the full photo. Colours are written `ff4fa3`, by name (`red`, `rouge`, `cyan`…) or as a hue (`210deg`). `sh docs/examples/generate.sh` makes these pictures again from [`recipes.txt`](examples/recipes.txt).
+`corrode effects` lists the effects and `corrode effects <effect>` tells the parameters of one, with their defaults. Sizes are in pixels for a picture whose longer side is 1000 pixels and grow with the picture, so a recipe looks the same on a preview and on the full photo. Colours are written `ff4fa3`, by name (`red`, `rouge`, `cyan`…) or as a hue (`210deg`). `sh docs/examples/generate.sh` makes these pictures again from [`recipes.txt`](examples/recipes.txt).
 
 ## What each effect does
 

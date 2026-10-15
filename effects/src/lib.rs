@@ -45,7 +45,7 @@ pub use register::{register, shifted};
 pub use remap::{HueMap, MAX_MOVES, Remap, remap};
 pub use sort::{Direction, PixelSort, pixel_sort};
 pub use spin::{Spin, spin};
-pub use units::{Percent, Point, REFERENCE_WIDTH, Size, scale_of};
+pub use units::{Percent, Point, REFERENCE_SIDE, Size, long_side, scale_of};
 pub use warp::{Liquid, liquid};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

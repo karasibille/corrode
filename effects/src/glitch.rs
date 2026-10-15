@@ -1,8 +1,8 @@
 //! The failures of a screen or a stream: slices of the picture pushed
 //! aside, lines that stretch, colour channels that come apart.
 //!
-//! Sizes are given in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) pixels
-//! wide and scale with the picture, so that a recipe looks the same on
+//! Sizes are given in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) pixels
+//! on its longer side and scale with the picture, so that a recipe looks the same on
 //! a preview and on the full-size picture.
 
 use std::fmt;
@@ -14,7 +14,7 @@ use super::parallel;
 use super::random::Random;
 use super::recipe::{Params, Spec, pair};
 use super::sort::Direction;
-use super::units::{Size, scale_of};
+use super::units::{Size, long_side, scale_of};
 
 fn scaled_offset(offset: i32, scale: f32) -> i32 {
     (offset as f32 * scale).round() as i32
@@ -26,7 +26,7 @@ pub struct SliceShift {
     /// How many horizontal slices are pushed aside.
     pub slices: u32,
     /// How far a slice can be pushed, either way, in pixels for a
-    /// picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide. What goes out on one side comes
+    /// picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side. What goes out on one side comes
     /// back on the other.
     pub shift: Size,
     /// Height of a slice, drawn between these two, in the same pixels.
@@ -57,8 +57,9 @@ pub fn slice_shift(image: &RgbImage, params: SliceShift, seed: u64) -> RgbImage 
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let max_shift = params.shift.on(width);
-    let heights = (params.height.0.on(width), params.height.1.on(width));
+    let side = long_side(image);
+    let max_shift = params.shift.on(side);
+    let heights = (params.height.0.on(side), params.height.1.on(side));
     let mut random = Random::new(seed);
     let mut shifted = image.clone();
     for _ in 0..params.slices {
@@ -91,7 +92,7 @@ pub struct PixelStretch {
     /// How many lines are stretched.
     pub bands: u32,
     /// How far a line is stretched, drawn between these two, in pixels
-    /// for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+    /// for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side.
     pub length: (Size, Size),
     /// Rows stretched downwards, or columns stretched rightwards.
     pub direction: Direction,
@@ -122,7 +123,8 @@ pub fn pixel_stretch(image: &RgbImage, params: PixelStretch, seed: u64) -> RgbIm
         Direction::Horizontal => (i, line),
         Direction::Vertical => (line, i),
     };
-    let lengths = (params.length.0.on(width), params.length.1.on(width));
+    let side = long_side(image);
+    let lengths = (params.length.0.on(side), params.length.1.on(side));
     let mut random = Random::new(seed);
     let mut stretched = image.clone();
     for _ in 0..params.bands {
@@ -141,7 +143,7 @@ pub fn pixel_stretch(image: &RgbImage, params: PixelStretch, seed: u64) -> RgbIm
 }
 
 /// Parameters of the channel split: how far each channel is moved, as
-/// `(dx, dy)`, in pixels for a picture [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide.
+/// `(dx, dy)`, in pixels for a picture [`REFERENCE_SIDE`](super::units::REFERENCE_SIDE) on its longer side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelSplit {
     pub red: (i32, i32),
@@ -167,7 +169,7 @@ pub fn channel_split(image: &RgbImage, params: ChannelSplit) -> RgbImage {
     if width == 0 || height == 0 {
         return image.clone();
     }
-    let scale = scale_of(width);
+    let scale = scale_of(long_side(image));
     let offsets = [params.red, params.green, params.blue]
         .map(|(dx, dy)| (scaled_offset(dx, scale), scaled_offset(dy, scale)));
     let source = |coordinate: u32, delta: i32, size: u32| {
