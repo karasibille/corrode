@@ -30,7 +30,7 @@ corrode effect docs/examples/photo.jpg result.jpg seed=7 falsecolor order=rgb ro
 
 **Film and light**: what a camera, a lens or a roll of film does by accident.
 
-- `drag`: a flash on a slow shutter. The picture stays sharp and a trail of light follows it, sideways (`motion`) or from the centre (`zoom`).
+- `drag`: a flash on a slow shutter. The picture stays sharp and a trail of light follows it, sideways (`motion`), from the centre (`zoom`) or round it (`arc`, with `center=x,y` to move the centre).
 - `aberration`: the lens does not focus all colours at the same place, so red and blue edges grow towards the corners.
 - `grain`: the speckle of fast film.
 - `fade`: the look of an old print, with the blacks lifted, the colours washed and a warm tint.

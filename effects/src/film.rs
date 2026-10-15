@@ -84,6 +84,9 @@ pub enum DragKind {
     Motion,
     /// A smear away from the centre, as a zoom turned during it.
     Zoom,
+    /// A smear along an arc round the centre, as a camera turned during
+    /// it.
+    Arc,
 }
 
 impl std::str::FromStr for DragKind {
@@ -93,7 +96,8 @@ impl std::str::FromStr for DragKind {
         match text {
             "motion" => Ok(DragKind::Motion),
             "zoom" => Ok(DragKind::Zoom),
-            other => Err(format!("unknown kind '{other}' (motion or zoom)")),
+            "arc" => Ok(DragKind::Arc),
+            other => Err(format!("unknown kind '{other}' (motion, zoom or arc)")),
         }
     }
 }
@@ -103,6 +107,7 @@ impl std::fmt::Display for DragKind {
         f.write_str(match self {
             DragKind::Motion => "motion",
             DragKind::Zoom => "zoom",
+            DragKind::Arc => "arc",
         })
     }
 }
@@ -113,11 +118,14 @@ pub struct Drag {
     pub kind: DragKind,
     /// How far the smear goes, in pixels for a picture
     /// [`REFERENCE_WIDTH`](super::units::REFERENCE_WIDTH) wide: the length of a motion smear, or how far
-    /// the edge of the picture moves in a zoom smear.
+    /// the edge of the picture moves in a zoom or an arc smear.
     pub length: Size,
     /// Direction of a motion smear, in degrees, 0 being to the right
     /// and 90 downwards.
     pub angle: f32,
+    /// The centre of a zoom or an arc smear, as shares of the width and
+    /// the height.
+    pub center: (Percent, Percent),
     /// How much of the smear shows, 0 to 100.
     pub mix: Percent,
     pub blend: Blend,
@@ -129,6 +137,7 @@ impl Default for Drag {
             kind: DragKind::Motion,
             length: Size::new(60),
             angle: 0.0,
+            center: (Percent::new(50), Percent::new(50)),
             mix: Percent::new(70),
             blend: Blend::Lighten,
         }
@@ -146,7 +155,8 @@ pub fn drag(image: &RgbImage, params: Drag) -> RgbImage {
     let length = params.length.on_f32(small.width());
     let samples = (length.ceil() as usize).clamp(1, SMEAR_SAMPLES);
     let (sw, sh) = (small.width() as f32, small.height() as f32);
-    let (cx, cy) = (sw / 2.0, sh / 2.0);
+    let cx = params.center.0.fraction() * (sw - 1.0);
+    let cy = params.center.1.fraction() * (sh - 1.0);
     let (dx, dy) = (
         params.angle.to_radians().cos(),
         params.angle.to_radians().sin(),
@@ -162,6 +172,13 @@ pub fn drag(image: &RgbImage, params: Drag) -> RgbImage {
                     // Towards the centre, further for points further out.
                     let reach = length / (sw / 2.0);
                     (x + (cx - x) * reach * t, y + (cy - y) * reach * t)
+                }
+                DragKind::Arc => {
+                    // Turning round the centre, by the angle that moves
+                    // the edge of the picture by `length`.
+                    let (sin, cos) = (length / (sw / 2.0) * t).sin_cos();
+                    let (ox, oy) = (x - cx, y - cy);
+                    (cx + ox * cos - oy * sin, cy + ox * sin + oy * cos)
                 }
             };
             let sample = bilinear(&small, sx, sy);
@@ -520,12 +537,16 @@ impl Spec for Drag {
     const PARAMS: &'static [(&'static str, &'static str)] = &[
         (
             "kind",
-            "`motion` (along a line) or `zoom` (from the centre)",
+            "`motion` (along a line), `zoom` (from the centre) or `arc` (round the centre)",
         ),
         ("length", "how far the smear goes, in pixels"),
         (
             "angle",
             "direction of a motion smear in degrees, 0 to the right, 90 down",
+        ),
+        (
+            "center",
+            "`x,y` centre of a zoom or arc smear, in percent of the width and height",
         ),
         ("mix", "how much of the smear shows, 0 to 100"),
         ("blend", "`lighten`, `screen` or `normal`"),
@@ -537,6 +558,7 @@ impl Spec for Drag {
             kind: params.get("kind", d.kind)?,
             length: params.get("length", d.length)?,
             angle: params.get("angle", d.angle)?,
+            center: params.pair("center", d.center)?,
             mix: params.get("mix", d.mix)?,
             blend: params.get("blend", d.blend)?,
         })
@@ -545,8 +567,14 @@ impl Spec for Drag {
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " kind={} length={} angle={} mix={} blend={}",
-            self.kind, self.length, self.angle, self.mix, self.blend
+            " kind={} length={} angle={} center={},{} mix={} blend={}",
+            self.kind,
+            self.length,
+            self.angle,
+            self.center.0,
+            self.center.1,
+            self.mix,
+            self.blend
         )
     }
 
@@ -770,6 +798,7 @@ mod tests {
                 angle: 0.0,
                 mix: Percent::new(100),
                 blend: Blend::Lighten,
+                ..Drag::default()
             },
         );
         assert_eq!(dragged.get_pixel(100, 60)[0], 250);
@@ -789,6 +818,26 @@ mod tests {
             },
         );
         assert_eq!((zoomed.width(), zoomed.height()), (200, 120));
+    }
+
+    #[test]
+    fn an_arc_drag_trails_the_light_round_the_centre() {
+        // Turning round the left edge, the spot leaves a trail up or down
+        // and none along the row.
+        let arced = drag(
+            &spot(),
+            Drag {
+                kind: DragKind::Arc,
+                length: Size::new(200),
+                center: (Percent::new(0), Percent::new(50)),
+                mix: Percent::new(100),
+                ..Drag::default()
+            },
+        );
+        assert_eq!(arced.get_pixel(100, 60)[0], 250);
+        let trail = arced.get_pixel(100, 45)[0].max(arced.get_pixel(100, 75)[0]);
+        assert!(trail > 60, "{trail}");
+        assert_eq!(arced.get_pixel(140, 60)[0], 30);
     }
 
     #[test]
