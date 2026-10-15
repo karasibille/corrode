@@ -1,0 +1,18 @@
+[package]
+name = "corrode-live"
+description = "Working on a picture with effects live in the terminal (the corrode live command)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+corrode-core.workspace = true
+corrode-effects.workspace = true
+corrode-ui.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+ratatui = "0.30"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

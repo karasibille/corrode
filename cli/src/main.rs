@@ -7,6 +7,7 @@ mod effect;
 mod ghost;
 mod gif;
 mod group;
+mod live;
 mod preset;
 mod select;
 
@@ -42,6 +43,8 @@ enum Command {
     Ghost(ghost::Args),
     /// Make an animated GIF from a picture and a recipe whose ranges move
     Gif(gif::Args),
+    /// Work on a picture with the recipe of a file, applied again each time it is saved
+    Live(live::Args),
     /// Look for the light bands LED lighting leaves, in every shot of a directory
     Bands(bands::Args),
     /// Remove the light bands of RAW files, into DNG files
@@ -57,6 +60,7 @@ fn main() -> ExitCode {
         Command::Effects(args) => effect::help(args),
         Command::Ghost(args) => ghost::run(args),
         Command::Gif(args) => gif::run(args),
+        Command::Live(args) => live::run(args),
         Command::Bands(args) => bands::run(args),
         Command::Deband(args) => deband::run(args),
     };

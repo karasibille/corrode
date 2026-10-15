@@ -70,3 +70,26 @@ corrode ghost burst1.RW2 burst2.RW2 burst3.RW2 burst4.RW2 -o ghosts.jpg --centre
 - `--register` lines the background of the frames up on the main one first, measured on the lights, the lamp above all, because the camera moves a little between two shots and a lamp is then seen once for each frame. The shift found is printed for each frame. It is the option to use on a burst shot by hand; it works with the others.
 - It uses the preview embedded in each file, smaller and better looking than a development of the RAW (the preview of a DNG made by `corrode deband` is 1024 pixels long, so give `--zoom` a value that keeps the result large enough); `--full` uses the full-size picture, and `--width` reduces the result.
 
+
+## Working live
+
+`corrode live` is for finding a recipe by trying it. It shows a picture in the terminal and watches a recipe file: each time the file is saved in your editor, the recipe is applied again and the result replaces what is on screen.
+
+```sh
+corrode live photo.jpg look.cor
+```
+
+The recipe file is made, with an example, if it does not exist. It holds a recipe as `corrode effect` reads it, over as many lines as you like, with `#` comments:
+
+```
+# warm and worn
+seed=7
+fade lift=20
++ grain strength=35   # a bit of film
+```
+
+- The recipe is applied to a copy of the picture reduced to 1000 pixels on its longer side, in a background thread, so that the screen never waits. The status line says how long it took. `loss` and `bend` work on blocks and bytes, which do not shrink with the picture, so their preview differs from the full-size result.
+- A recipe that is not valid, or that is half typed, does not clear the picture: the last good result stays and the status line says what is wrong. A file that is empty for a moment, as when an editor saves, is ignored.
+- `s` applies the last good recipe to the full-size picture (a RAW is developed first) and saves it next to the picture as `photo-live.jpg`, then `photo-live-2.jpg`: nothing is overwritten.
+- `g` makes a GIF the way [`corrode gif`](../README.md#gallery) does, from the ranges `a..b` of the recipe, as `photo-live.gif`.
+- `q` or `Esc` quits.

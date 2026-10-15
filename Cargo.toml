@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "effects", "ui", "select", "preset", "cli"]
+members = ["core", "effects", "ui", "select", "preset", "live", "cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ repository = "https://github.com/karasibille/corrode"
 [workspace.dependencies]
 corrode-core = { path = "core" }
 corrode-effects = { path = "effects" }
+corrode-live = { path = "live" }
 corrode-preset = { path = "preset" }
 corrode-select = { path = "select" }
 corrode-ui = { path = "ui" }

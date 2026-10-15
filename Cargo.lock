@@ -434,6 +434,7 @@ dependencies = [
  "clap",
  "corrode-core",
  "corrode-effects",
+ "corrode-live",
  "corrode-preset",
  "corrode-select",
  "image",
@@ -460,6 +461,19 @@ dependencies = [
  "image",
  "rayon",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "corrode-live"
+version = "0.1.0"
+dependencies = [
+ "corrode-core",
+ "corrode-effects",
+ "corrode-ui",
+ "image",
+ "ratatui",
+ "ratatui-image",
+ "tempfile",
 ]
 
 [[package]]
