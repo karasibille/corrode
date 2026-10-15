@@ -57,6 +57,20 @@ impl Encoder {
     }
 }
 
+/// How a picture is fitted to its area. At 100% it is already the size of
+/// the area and is never scaled; otherwise it is scaled with a filter that
+/// averages: the default of the terminal graphics library is nearest
+/// neighbour, which keeps one pixel in two or three and turns a face into
+/// speckle, and the dither and the noise of a dark picture into false
+/// bands.
+pub fn resize_for(at_100_percent: bool) -> Resize {
+    if at_100_percent {
+        Resize::Crop(None)
+    } else {
+        Resize::Scale(Some(FilterType::Lanczos3))
+    }
+}
+
 fn encode_loop(picker: &Picker, requests: &Receiver<Request>, results: &Sender<Encoded>) {
     while let Ok(mut request) = requests.recv() {
         // Only the latest request matters: the others are already stale.
@@ -81,11 +95,7 @@ fn encode_loop(picker: &Picker, requests: &Receiver<Request>, results: &Sender<E
             }
             None => request.picture.image.clone(),
         };
-        let resize = match request.crop {
-            // Already the size of the area: never scale, it is the point of 100%.
-            Some(_) => Resize::Crop(None),
-            None => Resize::Scale(None),
-        };
+        let resize = resize_for(request.crop.is_some());
         let protocol = picker
             .new_protocol(image, request.area, resize)
             .map_err(|err| err.to_string());
@@ -97,5 +107,19 @@ fn encode_loop(picker: &Picker, requests: &Receiver<Request>, results: &Sender<E
         if results.send(encoded).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scaled_picture_is_averaged_and_a_zoomed_one_is_not_scaled() {
+        assert!(matches!(
+            resize_for(false),
+            Resize::Scale(Some(FilterType::Lanczos3))
+        ));
+        assert!(matches!(resize_for(true), Resize::Crop(None)));
     }
 }

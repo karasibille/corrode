@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui_image::{Image, Resize};
+use ratatui_image::{FilterType, Image, Resize};
 
 use super::{THUMB_ROWS, Viewer};
 use crate::app::{Mode, scaled_view, zoom_crop};
@@ -170,7 +170,7 @@ impl Viewer {
                 && let Ok(protocol) = self.picker.new_protocol(
                     thumbnail.clone(),
                     self.thumbnail_size,
-                    Resize::Fit(None),
+                    Resize::Fit(Some(FilterType::Lanczos3)),
                 )
             {
                 state.thumbnail_protocol = Some(protocol);
